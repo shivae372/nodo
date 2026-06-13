@@ -20,20 +20,18 @@ on any project and any language — there is nothing project-specific to configu
 
 ### Step 1 — Run Nodo on the project root
 
-If Nodo is installed (`nodo` command available):
+Run the launcher from the cloned Nodo repo, pointing it at the current project
+(`.`). Replace `/path/to/nodo` with wherever the repo lives on this machine:
 
 ```bash
-nodo . 
+python /path/to/nodo/nodo.py .
 ```
 
-Otherwise run it as a module from wherever the repo is cloned (adjust the path):
-
-```bash
-python -m nodo .
-```
-
-If neither works, the Nodo repo may not be on this machine — tell the user to
-`git clone https://github.com/shivae372/nodo` and run `python -m /path/to/nodo .`.
+The launcher works from any directory and needs no install. If the Nodo repo is
+not on this machine, tell the user to clone it first:
+`git clone https://github.com/shivae372/nodo`, then run the command above with
+the clone path. (If you happen to be inside the Nodo repo root, `python -m nodo .`
+also works.)
 
 ### Step 2 — Report
 

@@ -1,9 +1,9 @@
 # Nodo
 
-[![PyPI](https://img.shields.io/pypi/v/nodo-map.svg)](https://pypi.org/project/nodo-map/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Python](https://img.shields.io/pypi/pyversions/nodo-map.svg)](https://pypi.org/project/nodo-map/)
+[![Python 3.8+](https://img.shields.io/badge/python-3.8%2B-blue.svg)](pyproject.toml)
 [![Zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen.svg)](pyproject.toml)
+[![Claude Code skill](https://img.shields.io/badge/Claude_Code-%2Fnodo_skill-8A2BE2.svg)](.claude/skills/nodo/SKILL.md)
 
 **Map any codebase in seconds.** Nodo scans your project, draws an interactive
 dependency graph, flags code smells, and — crucially — emits clean, structured
@@ -35,14 +35,7 @@ your architecture and open issues without you explaining a thing.
 
 ## Quick start
 
-Install from PyPI (the `nodo` command is published as `nodo-map`):
-
-```bash
-pip install nodo-map
-nodo /path/to/your/project --open
-```
-
-Or run straight from source with **zero install** — pure standard library, no dependencies:
+Nodo is **clone-and-run** — pure Python standard library, no install, no dependencies.
 
 ```bash
 git clone https://github.com/shivae372/nodo
@@ -50,14 +43,20 @@ cd nodo
 python -m nodo /path/to/your/project --open
 ```
 
-Run it inside a project with no path to scan the current directory:
+To map a project from anywhere, point Python at the launcher in the cloned repo:
 
 ```bash
-cd my-app
-python -m /path/to/nodo .       # or: nodo .
+python /path/to/nodo/nodo.py /path/to/your/project
 ```
 
 That's it. Open `.nodo/nodo.html` in any browser.
+
+### Recommended: the Claude Code skill
+
+The repo ships a [`/nodo` skill](.claude/skills/nodo/SKILL.md) for [Claude Code](https://claude.com/claude-code).
+Copy `.claude/skills/nodo/` into any project's `.claude/skills/`, then just type **`/nodo`** —
+the skill rebuilds the map and the AI-agent context files in one step, and Claude reads them
+back automatically. This is the blessed, highest-trust way to run it.
 
 ---
 
@@ -127,7 +126,7 @@ timeout.
 
 ### Custom rules
 
-Add a `.nodo.json` at your project root (`nodo --init` writes a starter):
+Add a `.nodo.json` at your project root (`python /path/to/nodo/nodo.py . --init` writes a starter):
 
 ```json
 {
