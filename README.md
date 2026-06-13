@@ -31,7 +31,7 @@ your architecture and open issues without you explaining a thing.
 No install needed — just clone and run:
 
 ```bash
-git clone https://github.com/yourname/nodo
+git clone https://github.com/shivae372/nodo
 cd nodo
 python -m nodo /path/to/your/project --open
 ```

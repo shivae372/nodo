@@ -12,10 +12,8 @@ the viewer works fully offline with no CDN dependency.
 """
 import json
 import datetime
-from collections import defaultdict, Counter
+from collections import defaultdict
 from pathlib import Path
-
-VENDOR_VIS = Path(__file__).parent / 'vendor' / 'vis-network.min.js'
 
 CAT_STYLE = {
     'api':       {'bg': '#3b82f6', 'bd': '#1d4ed8', 'name': 'API / Route'},
@@ -37,10 +35,6 @@ def _sev_size(d):
     if d >= 10: return 18
     if d >= 5:  return 13
     return 9
-
-
-def _esc(s):
-    return s.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
 
 def render(out_dir, project_name, abs_root, nodes, edges, communities,

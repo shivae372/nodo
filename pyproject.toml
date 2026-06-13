@@ -9,7 +9,7 @@ description = "Map any codebase: dependency graph + issue detection + AI-agent c
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }
-authors = [{ name = "Shiva" }]
+authors = [{ name = "Shiva Kumar Esakki Pandiyan", email = "shivae372@gmail.com" }]
 keywords = ["codebase", "architecture", "dependency-graph", "visualization", "code-quality", "ai", "llm", "developer-tools"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -23,8 +23,8 @@ classifiers = [
 dependencies = []
 
 [project.urls]
-Homepage = "https://github.com/yourname/nodo"
-Issues = "https://github.com/yourname/nodo/issues"
+Homepage = "https://github.com/shivae372/nodo"
+Issues = "https://github.com/shivae372/nodo/issues"
 
 [project.scripts]
 nodo = "nodo.__main__:main"

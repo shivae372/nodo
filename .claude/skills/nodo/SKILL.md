@@ -33,7 +33,7 @@ python -m nodo .
 ```
 
 If neither works, the Nodo repo may not be on this machine — tell the user to
-`git clone https://github.com/yourname/nodo` and run `python -m /path/to/nodo .`.
+`git clone https://github.com/shivae372/nodo` and run `python -m /path/to/nodo .`.
 
 ### Step 2 — Report
 
