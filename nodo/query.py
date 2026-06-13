@@ -70,7 +70,7 @@ def _bfs_path(start_id, goal_id, adj):
 
 
 def path_between(out_dir, needle_a, needle_b):
-    """Show the dependency chain connecting two files (graphify `path` equivalent).
+    """Show the dependency chain connecting two files (a `path` query).
 
     Tries A->B following imports; if none, tries B->A; reports either, or that
     they are not connected through imports.

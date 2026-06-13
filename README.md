@@ -191,6 +191,19 @@ timeout.
 **Topology** — high-coupling hubs (god objects), possibly-unused files.
 **Hygiene** — stray `console.log`/`print`, unchecked `process.env.X!`.
 
+### Cross-file bugs an LLM editing one file can't see
+
+These are the findings that need the *whole repo* in view — exactly what an AI
+assistant editing a single file lacks. All deterministic, tuned for near-zero
+false positives:
+
+**Broken contracts** — a symbol imported by one file that its source no longer
+exports (a rename/removal that breaks the importer at build time).
+**Import cycles** — real runtime circular imports (type-only imports excluded).
+**Orphaned exports** — exported symbols nothing imports; dead surface area.
+**Duplication drift** — identical blocks copied across files that can silently
+diverge when one copy is fixed and the others aren't.
+
 ### Custom rules
 
 Add a `.nodo.json` at your project root (`python /path/to/nodo/nodo.py . --init` writes a starter):

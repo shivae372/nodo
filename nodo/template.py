@@ -81,7 +81,7 @@ def build_html(project_name, abs_root, build_date, build_ts,
     # ── issue cards ──
     issue_html = _build_issue_html(issues, abs_root)
 
-    # ── flows + sensitive + api reference (auto-derived, graphify-style tabs) ──
+    # ── flows + sensitive + api reference (auto-derived tabs) ──
     flows_html = _build_flows_html(flows, abs_root)
     sensitive_html = _build_sensitive_html(sensitive, abs_root)
     api_html = _build_api_html(apis, abs_root)
@@ -220,7 +220,7 @@ def _build_flows_html(flows, abs_root):
 
     Each flow renders as: STEP 1 (entry) -> STEP 2 (its direct imports) -> STEP 3
     (their imports), so a reader can follow how a request/page actually moves
-    through the code — the graphify Data Flow tab, auto-built from real imports.
+    through the code — a Data Flow view auto-built from real imports.
     """
     if not flows:
         return '<p class="sub">No entry points detected (no API routes, pages, or main files found).</p>'
@@ -258,7 +258,7 @@ def _build_flows_html(flows, abs_root):
 
 
 def _build_api_html(apis, abs_root):
-    """Clean grouped HTTP route reference (graphify-style API tab)."""
+    """Clean grouped HTTP route reference (API tab)."""
     if not apis:
         return '<p class="sub">No API routes detected (no api/ folder or route handlers found).</p>'
     parts = []

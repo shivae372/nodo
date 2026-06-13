@@ -258,8 +258,7 @@ def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
         txt.append(f'  Detail: {iss["detail"]}\n')
     (out_dir / 'nodo-issues.txt').write_text('\n'.join(txt) + '\n', encoding='utf-8')
 
-    # ── Prose architecture report (readable narrative; graphify GRAPH_REPORT
-    #    equivalent, plus issue posture which graphify lacks) ──
+    # ── Prose architecture report (readable narrative + issue posture) ──
     _write_report(out_dir, project_name, build_ts, nodes, edges, communities,
                   comm_display, issues, hub_list, flows, sensitive,
                   n_err, n_warn, n_info)

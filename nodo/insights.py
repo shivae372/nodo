@@ -1,9 +1,9 @@
 """
 Derived insights — auto-generated "Flows" and "Sensitive surfaces" analyses.
 
-This is the brain-merge: graphify-style hand-written Data Flow / Security tabs,
-but generated from the dependency graph so they work on ANY project with zero
-configuration. No framework assumptions beyond generic patterns.
+Data Flow and Security views generated from the dependency graph so they work on
+ANY project with zero configuration. No framework assumptions beyond generic
+patterns.
 
   - entry_flows():   pick entry points (API routes, pages, CLI mains) and trace
                      a few levels of imports inward — "this endpoint touches X, Y, Z".

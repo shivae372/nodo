@@ -4,8 +4,8 @@ Claude Code integration: auto-feed the codebase map to the agent.
 `--hook` installs a SessionStart hook into the project's .claude/settings.json so
 that every time an agent (Claude Code) starts a session in this project, it
 silently receives Nodo's token-cheap architecture summary — no grepping, no
-re-reading files to rebuild context. This is the same "silent hook" trick that
-makes graphify's agent integration feel magic, done in pure stdlib.
+re-reading files to rebuild context. A silent agent-integration hook, done in
+pure stdlib.
 
 `--emit-context` is what the hook actually runs: it prints a JSON envelope with
 `additionalContext` containing nodo-context.md, which Claude Code injects into
