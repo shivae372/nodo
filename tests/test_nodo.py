@@ -413,6 +413,27 @@ class TestCacheAndDiagnostics(unittest.TestCase):
         self.assertIn("big.js", diag.get("skipped_large", []))
 
 
+class TestConfidence(unittest.TestCase):
+    def test_every_issue_has_confidence(self):
+        issues = detectors.detect_all(*graph({
+            "a.js": "import {b} from './b';\nconsole.log(1);\n",
+            "b.js": "import {a} from './a';\nexport const b=1;\n",
+        })[1:])
+        self.assertTrue(issues)
+        for i in issues:
+            self.assertIn(i.get("confidence"), ("high", "medium", "low"))
+
+    def test_confidence_levels_make_sense(self):
+        # cycle = high (structural fact); console.log = low (noisy hint)
+        issues = detectors.detect_all(*graph({
+            "a.js": "import {b} from './b';\nconsole.log('x');\n",
+            "b.js": "import {a} from './a';\nexport const b=1;\n",
+        })[1:])
+        by_type = {i["type"]: i["confidence"] for i in issues}
+        self.assertEqual(by_type.get("Import cycle"), "high")
+        self.assertEqual(by_type.get("console.log left in code"), "low")
+
+
 class TestNewDetectors(unittest.TestCase):
     def test_high_complexity_flagged(self):
         body = "export function big(){\n" + "".join(

@@ -208,6 +208,12 @@ automatically. It's idempotent and preserves any existing settings.
 
 ## What it detects
 
+Every issue carries a **confidence** (`high` / `medium` / `low`) so an agent can
+triage — act on high (structural facts / AST-verified: cycles, broken contracts,
+arg-count drift, platform-gated UI), weigh medium, treat low as hints
+(duplication, complexity, `console.log`, markers). It's in `nodo-context.json`,
+`nodo-context.md`, and `nodo-issues.txt`.
+
 Built-in, language-aware where it matters, noise-suppressed in test files:
 
 **Security** — `Math.random()` for IDs/tokens, `dangerouslySetInnerHTML`,
