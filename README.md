@@ -147,9 +147,14 @@ DEPENDENTS (13) — these import it; changing its exports may break them:
 DEPENDENCIES (4) — this file imports:
   -> lib/crypto.ts
   ...
+CHANGE IMPACT: 31 file(s) transitively depend on this (up to 4 hop(s); 18 indirect).
 ISSUES (1):
   [warn] fetch() without timeout:L40 — external call can hang the function
 ```
+
+The **CHANGE IMPACT** line is the full transitive blast radius — every file that
+directly *or indirectly* imports this one — so an agent can gauge "what could
+break if I change this" before touching it.
 
 ### Symbol queries (definition + references, or "confirmed dead")
 
@@ -206,7 +211,8 @@ automatically. It's idempotent and preserves any existing settings.
 Built-in, language-aware where it matters, noise-suppressed in test files:
 
 **Security** — `Math.random()` for IDs/tokens, `dangerouslySetInnerHTML`,
-`eval`/`new Function`, possible hardcoded secrets.
+`eval`/`new Function`, possible hardcoded secrets, SQL built by string
+concatenation (injection), unsafe deserialization (`pickle`/`yaml.load`).
 **Reliability** — empty `catch` blocks, bare `except:`, `fetch()` without a
 timeout.
 **Type safety** — `@ts-ignore`/`@ts-nocheck`, `as any` escapes.
@@ -299,6 +305,8 @@ nodo [PATH] [options]
   --ast                require tree-sitter parsing (note + regex fallback if absent)
   --no-ast             force the regex extractor even if tree-sitter is installed
   --no-cache           disable the incremental parse cache
+  --full               deepest scan: shortcut for --ast --multimodal
+  --benchmark          compare regex vs tree-sitter (timing + edges), then exit
   --ignore DIR         extra directory to skip (repeatable)
   --no-gitignore       don't read .gitignore for ignore dirs
   --version

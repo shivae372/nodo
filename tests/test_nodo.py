@@ -84,6 +84,21 @@ class TestResolver(unittest.TestCase):
         self.assertIn(("src/app/components/View.jsx", "src/app/lib/GLRenderer.js"),
                       edge_pairs(nodes, edges))
 
+    def test_template_literal_dynamic_import(self):
+        # await import(`./mod`) — static template literal must resolve to an edge
+        _, nodes, edges, _ = graph({
+            "src/a.js": "export async function f(){ const m = await import(`./mod`); return m; }\n",
+            "src/mod.js": "export const x=1;\n",
+        })
+        self.assertIn(("src/a.js", "src/mod.js"), edge_pairs(nodes, edges))
+
+    def test_export_star_as_namespace(self):
+        _, nodes, edges, _ = graph({
+            "src/a.ts": "export * as utils from './util';\n",
+            "src/util.ts": "export const x=1;\n",
+        })
+        self.assertIn(("src/a.ts", "src/util.ts"), edge_pairs(nodes, edges))
+
     def test_python_relative_import(self):
         _, nodes, edges, _ = graph({
             "pkg/__init__.py": "from .core import run\n",
@@ -406,6 +421,20 @@ class TestNewDetectors(unittest.TestCase):
                                     "src/main.ts": "import './big';\n"})[1:])
         self.assertTrue(any("complexity" in t.lower() for t in types))
 
+    def test_sql_injection_flagged(self):
+        types = issue_types(*graph({
+            "src/db.js": "export function q(id){ return run('SELECT * FROM users WHERE id=' + id); }\n",
+            "src/main.js": "import './db';\n",
+        })[1:])
+        self.assertTrue(any("SQL injection" in t for t in types))
+
+    def test_unsafe_deserialization_flagged(self):
+        types = issue_types(*graph({
+            "src/u.py": "import pickle\ndef load(b):\n    return pickle.loads(b)\n",
+            "src/main.py": "from .u import load\n",
+        })[1:])
+        self.assertTrue(any("deserialization" in t.lower() for t in types))
+
     def test_duplication_detects_literal_only_differences(self):
         def block(v, n):
             return ("export function f%s(){\n  const url = '%s';\n  const max = %d;\n"
@@ -447,6 +476,17 @@ class TestAST(unittest.TestCase):
         finally:
             scanner._USE_AST = False
 
+    def test_ast_defs_extraction(self):
+        from nodo import ast_index
+        if not ast_index.available():
+            self.skipTest("tree-sitter not installed")
+        defs = ast_index.extract_defs_ast(
+            "a.ts", "export class AudioEngine {}\nexport const make = () => 1;\nconst LOCAL = 5;\n")
+        names = {n for n, _ in defs}
+        self.assertIn("AudioEngine", names)
+        self.assertIn("make", names)
+        self.assertNotIn("LOCAL", names)  # non-function const is not a "definition"
+
 
 # ── End-to-end CLI ────────────────────────────────────────────────────────────
 class TestEndToEnd(unittest.TestCase):
@@ -465,6 +505,18 @@ class TestEndToEnd(unittest.TestCase):
         self.assertTrue(any(e for e in ctx["edges"]))
         for art in ("nodo.html", "nodo-context.md", "nodo-issues.txt"):
             self.assertTrue((Path(d) / ".nodo" / art).exists(), art)
+
+    def test_query_change_impact_transitive(self):
+        # a → b → c : changing c transitively affects both a and b
+        d = make_project({
+            "src/c.ts": "export const c = 1;\n",
+            "src/b.ts": "import {c} from './c';\nexport const b = () => c;\n",
+            "src/a.ts": "import {b} from './b';\nexport const a = () => b;\n",
+        })
+        r = subprocess.run([sys.executable, "-m", "nodo", d, "--query", "src/c.ts"],
+                           cwd=str(REPO), capture_output=True, text=True)
+        self.assertIn("CHANGE IMPACT", r.stdout)
+        self.assertIn("2 file(s) transitively", r.stdout)
 
     def test_query_symbol_cli(self):
         d = make_project({

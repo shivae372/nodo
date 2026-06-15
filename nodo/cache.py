@@ -11,7 +11,7 @@ Corrupt/unreadable cache → treated as empty. Disable with --no-cache.
 import json
 from pathlib import Path
 
-CACHE_VERSION = 2
+CACHE_VERSION = 3
 CACHE_NAME = 'cache.json'
 
 

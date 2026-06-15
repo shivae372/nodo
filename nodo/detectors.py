@@ -90,6 +90,16 @@ LINE_RULES = [
      'A long literal assigned to a key/token/secret/password variable. Move to an env var.',
      lambda l: bool(re.search(r'''(?i)(api[_-]?key|secret|token|password|passwd|access[_-]?key)\s*[:=]\s*['"][A-Za-z0-9_\-/+]{16,}['"]''', l)), None),
 
+    ('warn', 'Security', 'Possible SQL injection',
+     'A SQL statement built with string concatenation/interpolation. Use parameterized queries / prepared statements.',
+     lambda l: bool(re.search(r'(?i)\b(select|insert\s+into|update|delete\s+from)\b', l))
+               and bool(re.search(r'(\+\s*\w|\$\{|%s\b|%\(|\.format\(|f["\'])', l)), None),
+
+    ('warn', 'Security', 'Unsafe deserialization',
+     'pickle/marshal/yaml.load on untrusted input can execute arbitrary code. Use a safe loader (yaml.safe_load, json).',
+     lambda l: bool(re.search(r'\b(pickle\.loads?|marshal\.loads|yaml\.load)\s*\(', l))
+               and 'SafeLoader' not in l, 'py'),
+
     ('info', 'Debugging', 'print() left in code',
      'A stray print() — use logging in shipped Python code.',
      lambda l: bool(re.match(r'\s*print\(', l)) and not l.lstrip().startswith('#'), 'py'),

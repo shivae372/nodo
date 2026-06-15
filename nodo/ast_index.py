@@ -149,3 +149,54 @@ def extract_imports_ast(rel, text):
         return uniq
     except Exception:
         return None
+
+
+# definition node types whose `name` field is the symbol
+_DEF_TYPES = {
+    'function_definition', 'class_definition',                      # python
+    'function_declaration', 'generator_function_declaration',
+    'class_declaration', 'abstract_class_declaration',
+    'interface_declaration', 'type_alias_declaration', 'enum_declaration',
+    'method_definition',
+}
+_FUNCY = {'arrow_function', 'function', 'function_expression',
+          'class', 'class_expression', 'generator_function'}
+
+
+def extract_defs_ast(rel, text):
+    """Return [(name, line)] for definitions via tree-sitter, or None to fall back.
+    More accurate than regex: real names, no matches inside strings/comments, and
+    only function/class-valued consts (not every local literal)."""
+    ext = os.path.splitext(rel)[1].lower()
+    parser = _get_parser(ext)
+    if parser is None:
+        return None
+    try:
+        src = text.encode('utf-8')
+        tree = parser.parse(src)
+
+        def txt(node):
+            return src[node.start_byte:node.end_byte].decode('utf-8', 'ignore')
+
+        def field(node, name):
+            try:
+                return node.child_by_field_name(name)
+            except Exception:
+                return None
+
+        out = []
+        for n in _walk(tree.root_node):
+            t = n.type
+            if t in _DEF_TYPES:
+                nm = field(n, 'name')
+                if nm is not None:
+                    out.append((txt(nm), n.start_point[0] + 1))
+            elif t == 'variable_declarator':
+                val = field(n, 'value')
+                if val is not None and val.type in _FUNCY:
+                    nm = field(n, 'name')
+                    if nm is not None and nm.type == 'identifier':
+                        out.append((txt(nm), n.start_point[0] + 1))
+        return out
+    except Exception:
+        return None

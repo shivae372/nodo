@@ -70,6 +70,10 @@ def main(argv=None):
                              'is installed.')
     parser.add_argument('--no-cache', action='store_true',
                         help='Disable the incremental parse cache (.nodo/cache.json).')
+    parser.add_argument('--full', action='store_true',
+                        help='Deepest scan: shortcut for --ast --multimodal.')
+    parser.add_argument('--benchmark', action='store_true',
+                        help='Compare regex vs tree-sitter parsing (timing + edges) and exit.')
     parser.add_argument('--multimodal', action='store_true',
                         help='Include images / PDFs / video as assets linked to the nodes near '
                              'them (contents are read by the Claude skill, not nodo).')
@@ -86,6 +90,10 @@ def main(argv=None):
     if not root.is_dir():
         print(f'error: {root} is not a directory', file=sys.stderr)
         return 2
+
+    if args.full:                 # --full == --ast --multimodal
+        args.ast = True
+        args.multimodal = True
 
     # Parser selection: use tree-sitter automatically when importable (best
     # accuracy), else the zero-dep regex extractor. --no-ast forces regex;
@@ -109,6 +117,9 @@ def main(argv=None):
     cfg = load_config(root)
     project_name = args.name or cfg.get('project_name') or root.name
     out_dir = Path(args.out) if args.out else (root / '.nodo')
+
+    if args.benchmark:
+        return _run_benchmark(root, out_dir, cfg, args)
 
     if args.emit_context:
         # invoked by the Claude Code hook — print JSON envelope, nothing else.
@@ -204,6 +215,33 @@ def _resolve_multimodal(args):
     except Exception:
         pass
     return False
+
+
+def _run_benchmark(root, out_dir, cfg, args):
+    """Scan with regex and (if installed) tree-sitter; report timing + edge counts."""
+    from . import ast_index
+    ig = _ignore_dirs(cfg, args, out_dir, root)
+    mfk = cfg.get('max_file_kb', 512)
+    print(f'nodo {__version__} — parser benchmark on {root}')
+    print(f'  {"parser":<12}{"files":>8}{"edges":>8}{"time":>9}')
+    scanner._USE_AST = False
+    t0 = time.time()
+    n, e, _ = build_graph(root, ignore_dirs=ig, respect_gitignore=not args.no_gitignore, max_file_kb=mfk)
+    dt = time.time() - t0
+    print(f'  {"regex":<12}{len(n):>8}{len(e):>8}{dt:>8.2f}s')
+    if ast_index.available():
+        scanner.enable_ast()
+        t0 = time.time()
+        n2, e2, _ = build_graph(root, ignore_dirs=ig, respect_gitignore=not args.no_gitignore, max_file_kb=mfk)
+        dt2 = time.time() - t0
+        print(f'  {"tree-sitter":<12}{len(n2):>8}{len(e2):>8}{dt2:>8.2f}s')
+        ratio = f', tree-sitter took {dt2 / dt:.1f}x the regex time' if dt > 0 else ''
+        print(f'  delta: {len(e2) - len(e):+d} edges{ratio}')
+        scanner._USE_AST = False
+    else:
+        print('  tree-sitter not installed — '
+              'pip install tree-sitter tree-sitter-language-pack')
+    return 0
 
 
 def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):

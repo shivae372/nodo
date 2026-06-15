@@ -246,6 +246,29 @@ def query_file(out_dir, needle):
         out.append(f"  -> {d}")
     if len(dependencies) > 25:
         out.append(f"  ... +{len(dependencies) - 25} more")
+
+    # transitive change impact — everything that (directly or indirectly) imports
+    # this file. The "if I change this, what could break" blast radius, full depth.
+    rev = {}
+    for e in ctx.get('edges', []):
+        if e.get('kind', 'import') != 'import':
+            continue
+        rev.setdefault(e['target'], []).append(e['source'])
+    from collections import deque
+    impacted, dq, depth, maxd = set(), deque([node_id]), {node_id: 0}, 0
+    while dq:
+        cur = dq.popleft()
+        for src in rev.get(cur, []):
+            if src not in impacted and src != node_id:
+                impacted.add(src)
+                depth[src] = depth[cur] + 1
+                maxd = max(maxd, depth[src])
+                dq.append(src)
+    if impacted:
+        indirect = len(impacted) - len(dependents)
+        out.append("")
+        out.append(f"CHANGE IMPACT: {len(impacted)} file(s) transitively depend on this "
+                   f"(up to {maxd} hop(s)" + (f"; {indirect} indirect" if indirect > 0 else "") + ").")
     if issues_here:
         out.append("")
         out.append(f"ISSUES ({len(issues_here)}):")

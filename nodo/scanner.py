@@ -11,6 +11,7 @@ and aliased roots), then a *unique* basename match. Uniqueness is the guard
 against inventing phantom edges. This directly kills the "false orphan" class
 where a file is clearly imported but the exact path didn't resolve.
 """
+import hashlib
 import os
 import re
 from pathlib import Path
@@ -191,7 +192,11 @@ JS_IMPORT_RES = [
     re.compile(r'''import\s+(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]'''),
     re.compile(r'''require\(\s*['"]([^'"]+)['"]\s*\)'''),
     re.compile(r'''import\(\s*['"]([^'"]+)['"]\s*\)'''),
-    re.compile(r'''export\s+(?:\*|\{[^}]*\})\s+from\s+['"]([^'"]+)['"]'''),
+    # `export * from`, `export * as ns from`, `export { a } from`
+    re.compile(r'''export\s+(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s+from\s+['"]([^'"]+)['"]'''),
+    # dynamic import / require with a STATIC template literal (no ${} interpolation)
+    re.compile(r'''import\(\s*`([^`$]+)`\s*\)'''),
+    re.compile(r'''require\(\s*`([^`$]+)`\s*\)'''),
 ]
 PY_IMPORT_RES = [
     re.compile(r'^\s*from\s+([.\w]+)\s+import\b', re.M),
@@ -387,19 +392,18 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
     raw_imports = {}
     for abs_path, rel in files:
         try:
-            stt = os.stat(abs_path)
-            mtime, size = int(stt.st_mtime), stt.st_size
-        except OSError:
-            mtime, size = 0, 0
-        try:
             text = Path(abs_path).read_text(encoding='utf-8', errors='ignore')
         except Exception:
             text = ''
             if diagnostics is not None:
                 diagnostics.setdefault('read_errors', []).append(rel)
         file_texts[rel] = text
+        # Cache key is a CONTENT hash (+ parser mode), so it's correct even when an
+        # edit preserves mtime/size (e.g. a git checkout). We already hold the text,
+        # so hashing is cheap; a cached run is byte-identical to a clean one.
+        h = hashlib.sha1(text.encode('utf-8', 'ignore')).hexdigest()
         ce = cache.get(rel) if isinstance(cache, dict) else None
-        if ce and ce.get('mtime') == mtime and ce.get('size') == size and ce.get('ast') == _USE_AST:
+        if ce and ce.get('hash') == h and ce.get('ast') == _USE_AST:
             raw_imports[rel] = ce.get('imports', [])
             if diagnostics is not None:
                 diagnostics['cache_hits'] = diagnostics.get('cache_hits', 0) + 1
@@ -407,7 +411,7 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
             imps = extract_imports(rel, text)
             raw_imports[rel] = imps
             if isinstance(cache, dict):
-                cache[rel] = {'mtime': mtime, 'size': size, 'ast': _USE_AST, 'imports': imps}
+                cache[rel] = {'hash': h, 'ast': _USE_AST, 'imports': imps}
             if diagnostics is not None:
                 diagnostics['parsed'] = diagnostics.get('parsed', 0) + 1
     # drop cache entries for files that no longer exist

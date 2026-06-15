@@ -25,7 +25,13 @@ def _is_py(rel):
 
 
 def _defs_in(rel, text):
-    """Return [(name, line)] for definitions in one file (functions/classes/consts)."""
+    """Return [(name, line)] for definitions in one file (functions/classes/consts).
+    Uses tree-sitter when the parser is active (more accurate), else regex."""
+    from . import scanner, ast_index
+    if getattr(scanner, '_USE_AST', False):
+        ast_defs = ast_index.extract_defs_ast(rel, text)
+        if ast_defs is not None:
+            return ast_defs
     defs = []
     if _is_js(rel):
         pats = [
