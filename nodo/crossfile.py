@@ -42,6 +42,19 @@ def _is_test(rel):
     return bool(_TEST_RE.search(rel))
 
 
+def _strip_comments(text):
+    """Best-effort comment removal so keyword detectors don't match a guard/term
+    that only appears in a comment (e.g. a `// TODO: add requireAuth` masking the
+    fact the guard is actually missing). Conservative and language-agnostic."""
+    text = re.sub(r'/\*.*?\*/', ' ', text, flags=re.S)   # /* block */
+    out = []
+    for line in text.split('\n'):
+        line = re.sub(r'//.*$', '', line)                # // line comment
+        line = re.sub(r'(^|\s)#.*$', r'\1', line)        # # line comment (py/rb/sh)
+        out.append(line)
+    return '\n'.join(out)
+
+
 def _split_top_level(s):
     """Split a string on top-level commas only (ignore commas inside (), [], {}, <>)."""
     parts, depth, cur = [], 0, ''
@@ -300,12 +313,13 @@ def missing_guard(nodes, file_texts, min_siblings=4, min_ratio=0.7):
     def check_group(group, scope):
         if len(group) < min_siblings:
             return
+        # match guards in CODE only — a guard named in a comment doesn't count
+        stripped = {n['rel']: _strip_comments(file_texts.get(n['rel'], '')) for n in group}
         for label, rx in GUARD_PATTERNS:
             have = []
             lack = []
             for n in group:
-                txt = file_texts.get(n['rel'], '')
-                (have if rx.search(txt) else lack).append(n)
+                (have if rx.search(stripped[n['rel']]) else lack).append(n)
             if not have:
                 continue
             ratio = len(have) / len(group)

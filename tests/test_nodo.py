@@ -195,6 +195,22 @@ class TestStructuralDetectors(unittest.TestCase):
         self.assertLessEqual(n, 25, "per-type cap must bound a single detector")
         self.assertTrue(any("more" in t for t in types), "expected a capped-summary line")
 
+    def test_missing_guard_ignores_commented_keyword(self):
+        # 4 sibling routes; 3 call requireAuth in CODE, health only mentions it in a
+        # COMMENT → health must still be flagged as the missing-guard outlier.
+        files = {"src/app.ts": "export const x=1\n",
+                 "src/api/guard.ts": "export const requireAuth=(q)=>!!q;\n"}
+        for r in ("users", "orders", "admin"):
+            files["src/api/routes/%s.ts" % r] = (
+                "import {requireAuth} from '../guard';\n"
+                "export const %s=(q)=>requireAuth(q);\n" % r)
+        files["src/api/routes/health.ts"] = (
+            "// TODO: add requireAuth to this route\n"
+            "export const health=(q)=>({ok:1});\n")
+        types = issue_types(*graph(files)[1:])
+        self.assertTrue(any("Missing" in t for t in types),
+                        "a guard named only in a comment must not satisfy the check")
+
     def test_platform_gate_with_fallback_not_flagged(self):
         types = issue_types(*graph({
             "src/main.ts": "import {P} from './Panel';\nexport const x=()=>P;\n",
@@ -240,6 +256,7 @@ class TestSymbolsAndDocs(unittest.TestCase):
         out = explain_concept(str(Path(d) / ".nodo"), "audio features",
                               file_texts=texts, docs=docs)
         self.assertIn("docs/spec.md", out)
+        self.assertEqual(out.count("docs/spec.md"), 1, "doc must not be double-listed")
 
 
 # ── Robust test-file detection (the express false-positive root cause) ────────

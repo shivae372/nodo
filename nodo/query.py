@@ -143,6 +143,10 @@ def explain_concept(out_dir, concept, file_texts=None, docs=None, limit=12):
     bm_docs = []
     node_by_rel = {}
     for n in files:
+        # skip non-code nodes (doc/asset) — docs are added once via the `docs`
+        # param below; assets have no searchable text. Prevents double-listing.
+        if n.get('kind', 'code') != 'code':
+            continue
         rel = n['rel']
         node_by_rel[rel] = n
         path_toks = tokenize(rel.replace('/', ' ')) * 3  # weight path 3x
