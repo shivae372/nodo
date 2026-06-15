@@ -30,8 +30,16 @@ def _is_py(rel):
     return rel.lower().endswith('.py')
 
 
+_TEST_RE = re.compile(
+    r'(^|/)(tests?|specs?|__tests?__|e2e|__mocks__)/'  # test/ tests/ spec/ … even top-level
+    r'|(\.|_)(test|spec)\.'                            # foo.test.js  foo_spec.rb
+    r'|(^|/)test_[^/]*\.py$'                           # python test_foo.py
+    r'|(^|/)conftest\.py$',                            # pytest conftest
+    re.I)
+
+
 def _is_test(rel):
-    return bool(re.search(r'(\.test\.|\.spec\.|__tests__|/tests?/|_test\.)', rel))
+    return bool(_TEST_RE.search(rel))
 
 
 def _split_top_level(s):
@@ -485,36 +493,58 @@ _ENTRYISH = re.compile(r'(index|main|app|__init__|setup|conftest|server|cli|'
                        r'page|layout|route|bootstrap|entry)\.', re.I)
 
 
-def orphaned_but_substantial(nodes, edges, file_texts, defs_by_file, soft_refs):
+def orphaned_but_substantial(nodes, edges, file_texts, defs_by_file, soft_refs,
+                             max_report=8, max_ratio=0.20):
     """A file with real surface area (many exports / lots of code) that NOTHING
-    imports — "implemented but disconnected". This is the broken-feature smell an
-    AI agent introduces when it builds a feature and never wires it in. Graphify
-    can't see this; it's a pure structural signal."""
-    issues = []
+    imports — "implemented but disconnected". The broken-feature smell an AI agent
+    introduces when it builds a feature and never wires it in. Graphify can't see
+    this; it's a pure structural signal.
+
+    Reliability gates (so it can NEVER flood — a flood would destroy trust):
+      - tests and entry-point files are excluded from the eligible pool;
+      - if "disconnected" files are a large fraction of the pool (resolver gaps,
+        or a plugin/dynamic-import architecture), the signal is unreliable, so we
+        stay SILENT rather than emit dozens of dubious warnings;
+      - otherwise we report only the most substantial, capped at `max_report`."""
     inbound = defaultdict(int)
     id_to_rel = {n['id']: n['rel'] for n in nodes}
-    rel_ids = {n['rel']: n['id'] for n in nodes}
     for e in edges:
-        if e['target'] in id_to_rel:
+        if e['target'] in id_to_rel:           # target is an in-scope file
             inbound[id_to_rel[e['target']]] += 1
+
+    eligible = 0
+    cands = []
     for n in nodes:
         rel = n['rel']
         if _ENTRYISH.search(n['label']) or _is_test(rel):
             continue
+        eligible += 1
         base = re.sub(r'\.[^./]+$', '', n['label']).lower()
-        if base in soft_refs:               # referenced somewhere (even dynamically) → not dead
-            continue
-        if inbound.get(rel, 0) > 0:         # something imports it → connected
-            continue
+        if base in soft_refs or inbound.get(rel, 0) > 0:
+            continue                            # referenced anywhere → connected
         ndefs = len(defs_by_file.get(rel, {}))
         loc = n.get('loc', 0)
-        substantial = ndefs >= 3 or loc >= 40
-        if not substantial:
-            continue
+        if ndefs >= 3 or loc >= 40:
+            cands.append((n, ndefs, loc))
+
+    if not cands:
+        return []
+    # Flood protection — silence beats false positives — WITHOUT penalising small
+    # projects where one orphan is naturally a high fraction of the files:
+    ratio = (len(cands) / eligible) if eligible else 0.0
+    if len(cands) > max_report and ratio > max_ratio:
+        return []                       # many candidates AND a large share → flood
+    if eligible >= 8 and ratio > 0.5:
+        return []                       # most of a non-trivial repo "disconnected"
+                                        # → resolver gap / plugin arch, untrustworthy
+
+    cands.sort(key=lambda c: (c[1], c[2]), reverse=True)  # most surface area first
+    issues = []
+    for n, ndefs, loc in cands[:max_report]:
         why = (f'{ndefs} exported symbol(s)' if ndefs >= 3 else f'{loc} lines of code')
         issues.append(_mk(
             'warn', 'Dead Code', 'Disconnected feature (implemented but unreferenced)',
-            rel,
+            n['rel'],
             f"This file has real surface area ({why}) but nothing in the project "
             f"imports it and its name appears in no import. Likely an implemented "
             f"feature that was never wired in (or reachable only dynamically). "
@@ -575,8 +605,12 @@ def detect_cross_file(nodes, edges, file_texts, include_reference=False, soft_re
         from .scanner import all_import_target_basenames
         soft_refs = all_import_target_basenames(file_texts)
 
-    # analysis scope: app-tier files unless the caller opts into reference too
-    scope = [n for n in nodes if include_reference or n.get('tier') != 'reference']
+    # analysis scope: app-tier, non-test files. Reference/vendored code is excluded
+    # unless opted in, and test scaffolding is excluded from structural analysis
+    # (a test file legitimately imports nothing and is imported by nothing).
+    scope = [n for n in nodes
+             if (include_reference or n.get('tier') != 'reference')
+             and not _is_test(n['rel'])]
 
     defs_by_file = {}
     for n in scope:
