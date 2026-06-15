@@ -369,6 +369,24 @@ map after a refactor. See the skill's `SKILL.md` for details.
 
 ---
 
+## Tests
+
+Zero-dependency, like the tool itself:
+
+```bash
+python -m unittest discover -s tests    # or: pytest tests/
+```
+
+The suite covers import resolution (including the false-orphan cases), corpus
+tiering, every cross-file detector and its anti-false-positive guards, symbol
+queries, doc recall, robust test-file detection, and adversarial inputs
+(symlink loops, unicode names, oversized/binary files, malformed source) — so
+"it works" is checked, not asserted. Detectors are also bounded: no single check
+can emit more than 25 findings before collapsing to a summary line, so noise
+never buries signal on a large codebase.
+
+---
+
 ## License
 
 MIT — see [LICENSE](LICENSE). Bundles [vis-network](https://github.com/visjs/vis-network)

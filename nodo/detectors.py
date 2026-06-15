@@ -22,8 +22,16 @@ def _snippet(lines, line_no, ctx=1):
     return [{'n': i + 1, 'text': lines[i][:160]} for i in range(lo, hi)]
 
 
+_TEST_RE = re.compile(
+    r'(^|/)(tests?|specs?|__tests?__|e2e|__mocks__)/'  # test/ tests/ spec/ … even top-level
+    r'|(\.|_)(test|spec)\.'                            # foo.test.js  foo_spec.rb
+    r'|(^|/)test_[^/]*\.py$'                           # python test_foo.py
+    r'|(^|/)conftest\.py$',                            # pytest conftest
+    re.I)
+
+
 def _is_test(rel):
-    return bool(re.search(r'(\.test\.|\.spec\.|__tests__|/tests?/|_test\.)', rel))
+    return bool(_TEST_RE.search(rel))
 
 
 def _is_js(rel):
@@ -252,6 +260,32 @@ def _degree(num_nodes, edges):
     return dict(deg)
 
 
+def _cap_per_type(issues, cap=25):
+    """Bound noise: keep at most `cap` findings of any single type, replacing the
+    overflow with one summary line. A linter that prints 163 `as any` warnings
+    buries the signal — this guarantees no single detector can dominate the
+    report, on a codebase of any size. High-signal detectors (contracts, cycles,
+    disconnected features) are naturally well under the cap and unaffected."""
+    kept = defaultdict(int)
+    cat_of = {}
+    out = []
+    extra = defaultdict(int)
+    for iss in issues:
+        t = iss['type']
+        cat_of.setdefault(t, iss['category'])
+        if kept[t] < cap:
+            out.append(iss)
+            kept[t] += 1
+        else:
+            extra[t] += 1
+    for t, n in extra.items():
+        out.append(_mk('info', cat_of[t], f'{t} (+{n} more)', '', '',
+                       f'{n} additional "{t}" finding(s) omitted to keep the report '
+                       f'high-signal (showing the first {cap}). See the full list in '
+                       f'nodo-context.json or run a focused query.', '', []))
+    return out
+
+
 def detect_all(nodes, edges, file_texts, custom_rules=None, include_reference=False):
     from .scanner import all_import_target_basenames
     soft_refs = all_import_target_basenames(file_texts)
@@ -274,6 +308,7 @@ def detect_all(nodes, edges, file_texts, custom_rules=None, include_reference=Fa
     except Exception as e:
         # never let an analysis bug break the whole run
         print(f'[nodo] cross-file analysis skipped: {e}')
+    issues = _cap_per_type(issues)
     issues.sort(key=lambda x: (SEVERITY_ORDER.get(x['severity'], 9), x['category'], x['file']))
     for i, iss in enumerate(issues):
         iss['idx'] = i

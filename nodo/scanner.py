@@ -32,6 +32,8 @@ REFERENCE_SEGMENTS = {
     'external', 'externals', 'vendored', 'examples', 'example', 'samples',
     'sample', 'fixtures', 'fixture', 'testdata', 'test-data', 'mocks',
     '__mocks__', 'snapshots', '__snapshots__', 'demo', 'demos',
+    'benchmark', 'benchmarks', 'bench', 'perf', 'perf-measures',
+    'perf_measures', 'profiling',
 }
 
 # Extensions we treat as source and try to parse imports from.
