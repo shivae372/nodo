@@ -282,6 +282,43 @@ def _degree(num_nodes, edges):
     return dict(deg)
 
 
+# Per-issue confidence so an agent can triage: act on HIGH, weigh MEDIUM, treat
+# LOW as a hint. Keyed by issue type; defaults to medium. HIGH = structural facts
+# or AST-verified; LOW = fuzzy/noisy heuristics.
+_CONFIDENCE = {
+    # structural facts / AST-verified → high
+    'Import cycle': 'high',
+    'Call passes more args than defined': 'high',
+    'Imported symbol not exported by source': 'high',
+    'Platform-gated dead UI': 'high',
+    'Possible hardcoded secret': 'high',
+    # fuzzy / noisy heuristics → low
+    'Duplicated block across files': 'low',
+    'High decision complexity': 'low',
+    'console.log left in code': 'low',
+    'print() left in code': 'low',
+    'any escape hatch': 'low',
+    'ESLint rule suppressed': 'low',
+    'Possibly unused file': 'low',
+    'Exported symbols never imported': 'low',
+}
+
+
+def _confidence_for(issue_type):
+    if issue_type in _CONFIDENCE:
+        return _CONFIDENCE[issue_type]
+    t = issue_type.lower()
+    if t.endswith('more)') or 'marker' in t:      # capped summaries / TODO markers
+        return 'low'
+    return 'medium'
+
+
+def _apply_confidence(issues):
+    for iss in issues:
+        iss['confidence'] = _confidence_for(iss['type'])
+    return issues
+
+
 def _cap_per_type(issues, cap=25):
     """Bound noise: keep at most `cap` findings of any single type, replacing the
     overflow with one summary line. A linter that prints 163 `as any` warnings
@@ -331,6 +368,7 @@ def detect_all(nodes, edges, file_texts, custom_rules=None, include_reference=Fa
         # never let an analysis bug break the whole run
         print(f'[nodo] cross-file analysis skipped: {e}')
     issues = _cap_per_type(issues)
+    issues = _apply_confidence(issues)
     issues.sort(key=lambda x: (SEVERITY_ORDER.get(x['severity'], 9), x['category'], x['file']))
     for i, iss in enumerate(issues):
         iss['idx'] = i

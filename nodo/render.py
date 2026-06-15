@@ -243,7 +243,11 @@ def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
           '\n## Stats\n',
           f'- {len(nodes)} files · {len(edges)} dependencies · '
           f'{len(set(communities.values())) if communities else 0} modules',
-          f'- Issues: **{len(issues)}** ({n_err} errors, {n_warn} warnings, {n_info} info)\n',
+          f'- Issues: **{len(issues)}** ({n_err} errors, {n_warn} warnings, {n_info} info)',
+          f'- Confidence: {sum(1 for i in issues if i.get("confidence") == "high")} high · '
+          f'{sum(1 for i in issues if i.get("confidence") == "medium")} medium · '
+          f'{sum(1 for i in issues if i.get("confidence") == "low")} low '
+          f'(act on high first; low are hints)\n',
           '\n## Architectural hubs (highest blast radius)\n',
           '| File | Edges |', '|---|---|']
     for h in hub_list:
@@ -290,7 +294,7 @@ def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
         md.append(f'\n### {cat} ({len(grp)})\n')
         for iss in grp[:40]:
             ln = f':L{iss["line"]}' if iss.get('line') else ''
-            md.append(f'- **[{iss["severity"].upper()}] {iss["type"]}** — `{iss.get("file","")}{ln}` — {iss["detail"][:140]}')
+            md.append(f'- **[{iss["severity"].upper()}] {iss["type"]}** _(conf: {iss.get("confidence","medium")})_ — `{iss.get("file","")}{ln}` — {iss["detail"][:140]}')
         if len(grp) > 40:
             md.append(f'- _…and {len(grp) - 40} more (see nodo-context.json)_')
     (out_dir / 'nodo-context.md').write_text('\n'.join(md) + '\n', encoding='utf-8')
@@ -305,7 +309,7 @@ def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
             txt.append(f'\n\n── {iss["category"].upper()} ──\n')
             last = iss['category']
         ln = f':L{iss["line"]}' if iss.get('line') else ''
-        txt.append(f'[{iss["severity"].upper()}] {iss["type"]}')
+        txt.append(f'[{iss["severity"].upper()}] {iss["type"]}  (confidence: {iss.get("confidence", "medium")})')
         txt.append(f'  File  : {iss.get("file","")}{ln}')
         txt.append(f'  Detail: {iss["detail"]}\n')
     (out_dir / 'nodo-issues.txt').write_text('\n'.join(txt) + '\n', encoding='utf-8')
