@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "nodo-map"
-version = "0.1.0"
+version = "0.2.0"
 description = "Map any codebase: dependency graph + issue detection + AI-agent context. Zero dependencies, single self-contained HTML."
 readme = "README.md"
 requires-python = ">=3.8"

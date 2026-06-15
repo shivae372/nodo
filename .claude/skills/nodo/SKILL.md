@@ -53,19 +53,41 @@ Tell the user:
 
   It prints the file's dependents (who imports it), dependencies, hub rank, and
   any issues — no rescan, reads the existing map.
+- **Is a symbol used, or dead?** `--query` also takes a symbol name, not just a
+  file. Use it to confirm whether a function/class/feature is actually wired in
+  before you touch it (self-verifying — no grep needed):
+
+  ```bash
+  python /path/to/nodo/nodo.py . --query AudioEngine
+  ```
+
+  Prints where the symbol is defined and every file that references it, or
+  "0 files — nothing references this symbol" for a confirmed orphan.
 - **How does A connect to B:** trace the import chain between two files:
 
   ```bash
   python /path/to/nodo/nodo.py . --path path/to/a.ts path/to/b.ts
   ```
 
-- **Where does a concept live:** BM25 search (handles synonyms, e.g. `auth`
-  also matches login/jwt/session) — use this instead of grepping to locate a
-  feature:
+- **Where does a concept live (code + design docs):** BM25 search (handles
+  synonyms, e.g. `auth` also matches login/jwt/session) — use this instead of
+  grepping to locate a feature. It also searches the project's Markdown/spec
+  docs, so you can find the doc that *defines* a feature and judge the code
+  against intent:
 
   ```bash
   python /path/to/nodo/nodo.py . --explain "authentication"
   ```
+
+- **Broken-feature findings to act on:** the issue list flags two high-value
+  structural smells an AI agent commonly introduces — `Disconnected feature
+  (implemented but unreferenced)` (a file with real surface area that nothing
+  imports) and `Platform-gated dead UI` (handlers that no-op outside their
+  platform). When you see these, verify with `--query <symbol>` before assuming
+  code is live.
+- **Noise control:** reference/vendored/example dirs are excluded from issue
+  counts by default. Pass `--include-vendor` only if you specifically need to
+  audit third-party code.
 
 - For a readable narrative overview, read `.nodo/nodo-report.md` (corpus,
   load-bearing files, security posture, primary flows, code health).
@@ -91,6 +113,14 @@ hook always serves the latest `.nodo/nodo-context.md`.
 
 - Nodo is pure standard-library Python (3.8+). No pip install or npm needed.
 - It never makes network calls; code stays local.
+- **Multimodal:** `--multimodal` links images/PDFs/video to the nodes that
+  reference them and lists them in `nodo-context.json` → `assets`. Nodo locates
+  and links the assets; *you* (Claude) read the image/PDF contents with your own
+  vision when the user asks. `--docs-only` indexes doc text but skips binary
+  assets. Bare runs on a terminal prompt for which to use; default is docs-only.
+- **Optional accuracy:** `--ast` uses tree-sitter when installed
+  (`pip install tree-sitter tree-sitter-languages`) and silently falls back to
+  the zero-dep regex extractor otherwise — never required.
 - Custom project rules live in `.nodo.json` at the project root (`nodo --init`
   writes a starter). Add regex rules there to flag project-specific smells.
 - The HTML inlines vis-network from `nodo/vendor/vis-network.min.js`, so the

@@ -151,6 +151,26 @@ ISSUES (1):
   [warn] fetch() without timeout:L40 — external call can hang the function
 ```
 
+### Symbol queries (definition + references, or "confirmed dead")
+
+`--query` also takes a **symbol**, not just a file. Ask where `AudioEngine` is
+defined and who references it — or get a confirmation that nothing does:
+
+```bash
+python nodo.py . --query AudioEngine
+```
+
+```
+SYMBOL  AudioEngine
+DEFINED IN (1):
+  src/features/AudioEngine.js:L12
+REFERENCED IN: 0 files — nothing references this symbol.
+  Confirmed unreferenced: likely dead code or an unwired feature
+```
+
+This makes the disconnected-feature and dead-code findings **self-verifying** —
+no grep needed to confirm an orphan.
+
 ### Trace & explain (no file reads)
 
 ```bash
@@ -161,7 +181,10 @@ python nodo.py . --explain "authentication"     # which files implement a concep
 `--path` BFS-traces the import chain between two files. `--explain` is a
 zero-dependency BM25 keyword search with a code-aware tokenizer (splits
 `camelCase`/`snake_case`) and a concept-synonym map, so `auth` also finds
-`login`/`jwt`/`session`. Both answer in a few hundred tokens.
+`login`/`jwt`/`session`. It also folds in your **design docs** (Markdown / specs),
+so `--explain "audio features"` surfaces the spec that *defines* a feature next
+to the code that implements it — letting you judge code against intent. Both
+answer in a few hundred tokens.
 
 ### Auto-load the map at session start
 
@@ -198,11 +221,28 @@ assistant editing a single file lacks. All deterministic, tuned for near-zero
 false positives:
 
 **Broken contracts** — a symbol imported by one file that its source no longer
-exports (a rename/removal that breaks the importer at build time).
+exports (a rename/removal that breaks the importer at build time). Now follows
+`export * from` barrels, so re-exported symbols are no longer falsely flagged.
 **Import cycles** — real runtime circular imports (type-only imports excluded).
+**Disconnected features** — a file with real surface area (many exports / lots
+of code) that *nothing* in the project imports and whose name appears in no
+import. The "implemented but never wired in" smell — exactly what an AI agent
+introduces when it builds a feature and forgets to connect it. Graphify can't
+see this.
+**Platform-gated dead UI** — a component whose handlers all call an injected
+bridge with optional chaining (`window.electronAPI?.x()`) and no fallback, so it
+silently no-ops outside that platform (a browser/SSR build).
 **Orphaned exports** — exported symbols nothing imports; dead surface area.
 **Duplication drift** — identical blocks copied across files that can silently
 diverge when one copy is fixed and the others aren't.
+
+### Signal over noise: corpus tiering
+
+Vendored, reference, and example code (`reference/`, `vendor/`, `third_party/`,
+`examples/`, `fixtures/`, …) is **tiered out of issue counts by default**, so a
+third-party folder full of `console.log`s never buries findings in your own
+code. The files still appear in the graph — they're just not counted against
+you. Pass `--include-vendor` to analyse them too.
 
 ### Custom rules
 
@@ -249,6 +289,14 @@ nodo [PATH] [options]
   --name NAME          project name in the viewer (default: folder name)
   --open               open the HTML in your browser when done
   --init               write a sample .nodo.json and exit
+  --query FILE|SYMBOL  blast radius for a file, or definition+references for a symbol
+  --path A B           show the import chain connecting two files
+  --explain CONCEPT    find the files & design docs related to a concept (BM25)
+  --hook               install a Claude Code SessionStart hook, then exit
+  --include-vendor     also analyse reference/vendored/example dirs
+  --multimodal         link images/PDFs/video to the nodes near them
+  --docs-only          index doc text but skip the multimodal asset pass
+  --ast                EXPERIMENTAL: use tree-sitter when installed (regex fallback)
   --ignore DIR         extra directory to skip (repeatable)
   --no-gitignore       don't read .gitignore for ignore dirs
   --version
@@ -256,12 +304,54 @@ nodo [PATH] [options]
 
 ---
 
+## Multimodal (images, PDFs, docs)
+
+A codebase is more than code. Run the multimodal pass to fold docs and visual
+assets into the map:
+
+```bash
+python nodo.py . --multimodal      # include images / PDFs / video
+python nodo.py . --docs-only       # docs text only, skip binary assets
+```
+
+Run bare (`python nodo.py .`) on a terminal and Nodo **asks** whether to include
+images/PDFs; in scripts and agent runs it defaults to docs-only (no prompt, no
+heavy work). Assets are **linked to the nodes that reference them** (e.g. an
+`<img src="diagram.png">` or `![](arch.pdf)` in a doc) and listed in
+`nodo-context.json` → `assets`.
+
+Nodo's core never sends anything over the network, so it does not *interpret*
+image pixels itself — it locates each asset and wires it to the right nodes, and
+the Claude skill reads the image/PDF with Claude's own vision when you ask. Local
+PDF *text* extraction kicks in automatically when `pypdf` is installed (still
+fully offline); without it, PDFs are still indexed and linked.
+
+## Optional: tree-sitter accuracy (`--ast`, experimental)
+
+Nodo defaults to a fast, dependency-free regex extractor. For deeper accuracy on
+large TypeScript/Python codebases you can opt into real parse trees:
+
+```bash
+pip install tree-sitter tree-sitter-languages
+python nodo.py . --ast
+```
+
+If tree-sitter isn't installed, `--ast` prints a one-line note and silently uses
+the regex path — the zero-dependency promise is never broken. (Experimental;
+the regex path remains the tested default.)
+
+---
+
 ## How it works
 
 1. **Scan** — walk the tree (honoring `.gitignore` + sane defaults), read every
    source file, extract imports per language.
-2. **Resolve** — turn import strings into real file edges (relative paths,
-   tsconfig-style `@/` aliases, `src/` roots, Python dotted modules).
+2. **Resolve** — turn import strings into real file edges, bundler-style: exact
+   path first, then a *unique* suffix match (handles off-by-one relative depths,
+   `baseUrl`, aliased roots), then a *unique* basename — uniqueness is required,
+   so it fixes false orphans without inventing phantom edges. Handles relative
+   paths, tsconfig-style `@/`/`~/` aliases, `src/`/`app/` roots, dir `index`
+   files, and Python dotted modules.
 3. **Cluster** — label-propagation community detection (no external libs).
 4. **Detect** — run built-in + custom rules, capturing line numbers and snippets.
 5. **Render** — emit the self-contained HTML (vis-network inlined) plus the JSON

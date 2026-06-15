@@ -95,11 +95,22 @@ LINE_RULES = [
 MARKER_RE = re.compile(r'(?://|#|/\*|\*)\s*(TODO|FIXME|HACK|XXX)\b[:\s]?(.*)')
 
 
-def run_builtin_detectors(nodes, edges, file_texts):
-    """Return a list of issue dicts from the built-in detector set."""
+def run_builtin_detectors(nodes, edges, file_texts, include_reference=False, soft_refs=None):
+    """Return a list of issue dicts from the built-in detector set.
+
+    Reference/vendored files (tier='reference') are skipped by default so
+    third-party noise never drowns your own code — pass include_reference=True to
+    analyse them too. `soft_refs` is the set of import-target basenames across the
+    repo; a file whose basename appears there is never called dead code."""
     issues = []
     deg = _degree(len(nodes), edges)
     id_to_node = {n['id']: n for n in nodes}
+    if soft_refs is None:
+        from .scanner import all_import_target_basenames
+        soft_refs = all_import_target_basenames(file_texts)
+
+    def _skip_tier(n):
+        return (not include_reference) and n.get('tier') == 'reference'
 
     # ── topology issues ──
     ranked = sorted(deg.items(), key=lambda kv: kv[1], reverse=True)
@@ -109,25 +120,35 @@ def run_builtin_detectors(nodes, edges, file_texts):
         median = degrees[len(degrees) // 2] if degrees else 0
         threshold = max(20, median * 8)
         for nid, d in ranked:
-            if d >= threshold:
+            if d >= threshold and not _skip_tier(id_to_node[nid]):
                 n = id_to_node[nid]
                 issues.append(_mk('warn', 'Coupling', 'High-coupling hub',
                     n['label'], n['rel'],
                     f'{d} connections — far above the project median ({median}). A change here has a large blast radius; consider splitting responsibilities.',
                     '', []))
 
-    # dead / isolated code (no edges, not an entrypoint-looking file)
+    # dead / isolated code (no edges, not an entrypoint-looking file).
+    # Suppressed when: the file is reference-tier, its basename is referenced
+    # anywhere (soft ref), or it's substantial (crossfile's "disconnected feature"
+    # detector owns those, with a sharper message).
     entry_pat = re.compile(r'(index|main|app|__init__|setup|conftest|page|layout|route)\.', re.I)
     for n in nodes:
-        if deg.get(n['id'], 0) == 0 and not entry_pat.search(n['label']) and not _is_test(n['rel']):
+        if _skip_tier(n):
+            continue
+        base = re.sub(r'\.[^./]+$', '', n['label']).lower()
+        if (deg.get(n['id'], 0) == 0 and not entry_pat.search(n['label'])
+                and not _is_test(n['rel']) and base not in soft_refs
+                and n.get('loc', 0) < 40):
             if n['category'] in ('lib', 'component', 'model', 'store'):
                 issues.append(_mk('info', 'Dead Code', 'Possibly unused file',
                     n['label'], n['rel'],
-                    'No resolved imports in or out. Likely dead code, an entrypoint, or imported via a path the resolver missed.',
+                    'No resolved imports in or out, and the filename is not referenced anywhere. Likely dead code (or imported dynamically).',
                     '', []))
 
     # ── line-level detectors ──
     for n in nodes:
+        if _skip_tier(n):
+            continue
         rel = n['rel']
         text = file_texts.get(rel, '')
         if not text:
@@ -231,8 +252,11 @@ def _degree(num_nodes, edges):
     return dict(deg)
 
 
-def detect_all(nodes, edges, file_texts, custom_rules=None):
-    issues = run_builtin_detectors(nodes, edges, file_texts)
+def detect_all(nodes, edges, file_texts, custom_rules=None, include_reference=False):
+    from .scanner import all_import_target_basenames
+    soft_refs = all_import_target_basenames(file_texts)
+    issues = run_builtin_detectors(nodes, edges, file_texts,
+                                   include_reference=include_reference, soft_refs=soft_refs)
     if custom_rules:
         issues += run_custom_rules(nodes, file_texts, custom_rules)
     # cross-file detectors: the bugs an LLM editing one file can't see
@@ -243,7 +267,8 @@ def detect_all(nodes, edges, file_texts, custom_rules=None):
         old_limit = sys.getrecursionlimit()
         sys.setrecursionlimit(max(old_limit, len(nodes) * 4 + 1000))
         try:
-            issues += detect_cross_file(nodes, edges, file_texts)
+            issues += detect_cross_file(nodes, edges, file_texts,
+                                        include_reference=include_reference, soft_refs=soft_refs)
         finally:
             sys.setrecursionlimit(old_limit)
     except Exception as e:

@@ -30,6 +30,10 @@ def _is_py(rel):
     return rel.lower().endswith('.py')
 
 
+def _is_test(rel):
+    return bool(re.search(r'(\.test\.|\.spec\.|__tests__|/tests?/|_test\.)', rel))
+
+
 def _split_top_level(s):
     """Split a string on top-level commas only (ignore commas inside (), [], {}, <>)."""
     parts, depth, cur = [], 0, ''
@@ -95,6 +99,9 @@ def _extract_defs(rel, text):
         for m in re.finditer(r'export\s+(?:const|let|var|class)\s+(\w+)', text):
             line = text[:m.start()].count('\n') + 1
             defs.setdefault(m.group(1), {'params': None, 'line': line})
+        # default exports: export default function/class NAME
+        for m in re.finditer(r'export\s+default\s+(?:async\s+)?(?:function|class)\s+(\w+)', text):
+            defs.setdefault(m.group(1), {'params': None, 'line': text[:m.start()].count('\n') + 1})
         # re-export: export { a, b as c }
         for m in re.finditer(r'export\s*\{([^}]*)\}', text):
             for raw in m.group(1).split(','):
@@ -201,6 +208,16 @@ def broken_contracts(nodes, edges, file_texts, defs_by_file, id_to_rel):
                 continue  # ambiguous or unresolved → don't risk a false positive
             tgt = matches[0]
             tdefs = defs_by_file[tgt]
+            tgt_text = file_texts.get(tgt, '')
+            # CONFIDENCE GUARD: if the target re-exports a wildcard (`export * from`)
+            # or uses CommonJS dynamic exports, the symbol may legitimately come
+            # through transitively — we cannot prove it's missing, so stay silent.
+            # (This is the exact false-positive class from the audit: a barrel that
+            #  does `export * from './x'` looked like it was missing the symbol.)
+            if (re.search(r'export\s*\*', tgt_text)
+                    or 'module.exports' in tgt_text
+                    or re.search(r'\bexports\.', tgt_text)):
+                continue
             if name not in tdefs and name[0].islower():
                 issues.append(_mk(
                     'warn', 'Contract', 'Imported symbol not exported by source',
@@ -393,6 +410,11 @@ def orphans(nodes, edges, file_texts, defs_by_file, id_to_rel):
         rel = n['rel']
         if entry_pat.search(n['label']):
             continue
+        # Only flag files that ARE reached (inbound > 0) but expose dead exports.
+        # Files nothing imports at all are handled by orphaned_but_substantial,
+        # so we don't double-report them here.
+        if inbound.get(rel, 0) == 0:
+            continue
         d = defs_by_file.get(rel, {})
         if not d:
             continue
@@ -458,12 +480,106 @@ def duplication_drift(nodes, file_texts, block=6, min_files=2):
     return issues[:15]  # cap noise
 
 
-# ── Orchestrator ──────────────────────────────────────────────────────────────
-def detect_cross_file(nodes, edges, file_texts):
-    """Run all cross-file detectors and return a combined issue list."""
+# ── 6. Orphaned-but-substantial: the "broken feature" smell ───────────────────
+_ENTRYISH = re.compile(r'(index|main|app|__init__|setup|conftest|server|cli|'
+                       r'page|layout|route|bootstrap|entry)\.', re.I)
+
+
+def orphaned_but_substantial(nodes, edges, file_texts, defs_by_file, soft_refs):
+    """A file with real surface area (many exports / lots of code) that NOTHING
+    imports — "implemented but disconnected". This is the broken-feature smell an
+    AI agent introduces when it builds a feature and never wires it in. Graphify
+    can't see this; it's a pure structural signal."""
+    issues = []
+    inbound = defaultdict(int)
     id_to_rel = {n['id']: n['rel'] for n in nodes}
-    defs_by_file = {}
+    rel_ids = {n['rel']: n['id'] for n in nodes}
+    for e in edges:
+        if e['target'] in id_to_rel:
+            inbound[id_to_rel[e['target']]] += 1
     for n in nodes:
+        rel = n['rel']
+        if _ENTRYISH.search(n['label']) or _is_test(rel):
+            continue
+        base = re.sub(r'\.[^./]+$', '', n['label']).lower()
+        if base in soft_refs:               # referenced somewhere (even dynamically) → not dead
+            continue
+        if inbound.get(rel, 0) > 0:         # something imports it → connected
+            continue
+        ndefs = len(defs_by_file.get(rel, {}))
+        loc = n.get('loc', 0)
+        substantial = ndefs >= 3 or loc >= 40
+        if not substantial:
+            continue
+        why = (f'{ndefs} exported symbol(s)' if ndefs >= 3 else f'{loc} lines of code')
+        issues.append(_mk(
+            'warn', 'Dead Code', 'Disconnected feature (implemented but unreferenced)',
+            rel,
+            f"This file has real surface area ({why}) but nothing in the project "
+            f"imports it and its name appears in no import. Likely an implemented "
+            f"feature that was never wired in (or reachable only dynamically). "
+            f"Verify it's actually used.",
+            ''))
+    return issues
+
+
+# ── 7. Platform-gated dead UI ──────────────────────────────────────────────────
+def platform_gated_dead_ui(nodes, file_texts):
+    """A component whose handlers all call an injected platform bridge with
+    optional chaining (e.g. `window.electronAPI?.x()`) and no fallback — it
+    silently no-ops outside that platform (browser/SSR)."""
+    issues = []
+    bridge_re = re.compile(r'window\.([A-Za-z_]\w*)\?\.')
+    for n in nodes:
+        rel = n['rel']
+        if not _is_js(rel):
+            continue
+        text = file_texts.get(rel, '')
+        if not text:
+            continue
+        bridges = Counter(bridge_re.findall(text))
+        if not bridges:
+            continue
+        bridge, count = bridges.most_common(1)[0]
+        # only treat injected platform bridges (electron-style or *API) as gates
+        if not (bridge == 'electronAPI' or bridge == 'electron' or bridge.endswith('API')):
+            continue
+        if count < 2:
+            continue
+        # a non-optional guard or fallback means it's handled — skip
+        if (re.search(rf'window\.{re.escape(bridge)}\b(?!\?)', text)
+                or re.search(r'\belse\b', text)
+                or 'typeof window' in text):
+            continue
+        issues.append(_mk(
+            'warn', 'Dead Code', 'Platform-gated dead UI',
+            rel,
+            f"All {count} handlers call `window.{bridge}?.*` with optional chaining "
+            f"and no fallback — this component silently no-ops when `{bridge}` is "
+            f"absent (a browser/SSR build, or before the bridge loads). Add a guard "
+            f"or a fallback path.",
+            ''))
+    return issues
+
+
+# ── Orchestrator ──────────────────────────────────────────────────────────────
+def detect_cross_file(nodes, edges, file_texts, include_reference=False, soft_refs=None):
+    """Run all cross-file detectors and return a combined issue list.
+
+    Reference/vendored files are excluded from analysis by default (pass
+    include_reference=True to include them). `soft_refs` is the set of
+    import-target basenames across the whole repo — used so a file referenced
+    anywhere is never mislabelled as dead."""
+    id_to_rel = {n['id']: n['rel'] for n in nodes}
+    if soft_refs is None:
+        from .scanner import all_import_target_basenames
+        soft_refs = all_import_target_basenames(file_texts)
+
+    # analysis scope: app-tier files unless the caller opts into reference too
+    scope = [n for n in nodes if include_reference or n.get('tier') != 'reference']
+
+    defs_by_file = {}
+    for n in scope:
         t = file_texts.get(n['rel'], '')
         if t and (_is_js(n['rel']) or _is_py(n['rel'])):
             d = _extract_defs(n['rel'], t)
@@ -471,14 +587,16 @@ def detect_cross_file(nodes, edges, file_texts):
                 defs_by_file[n['rel']] = d
 
     issues = []
-    issues += broken_contracts(nodes, edges, file_texts, defs_by_file, id_to_rel)
+    issues += broken_contracts(scope, edges, file_texts, defs_by_file, id_to_rel)
     # NOTE: arg-count mismatch is intentionally NOT run. Regex can't reliably
     # count args across real TypeScript (generics, multi-line object literals,
     # optional/default/rest params) without a true parser, and false positives
     # destroy trust. Kept in the module for opt-in / future AST-backed use.
-    # issues += arg_mismatches(nodes, file_texts, defs_by_file, id_to_rel, edges)
-    issues += missing_guard(nodes, file_texts)
-    issues += cycles(nodes, edges, id_to_rel, file_texts)
-    issues += orphans(nodes, edges, file_texts, defs_by_file, id_to_rel)
-    issues += duplication_drift(nodes, file_texts)
+    # issues += arg_mismatches(scope, file_texts, defs_by_file, id_to_rel, edges)
+    issues += missing_guard(scope, file_texts)
+    issues += cycles(scope, edges, id_to_rel, file_texts)
+    issues += orphans(scope, edges, file_texts, defs_by_file, id_to_rel)
+    issues += orphaned_but_substantial(scope, edges, file_texts, defs_by_file, soft_refs)
+    issues += platform_gated_dead_ui(scope, file_texts)
+    issues += duplication_drift(scope, file_texts)
     return issues
