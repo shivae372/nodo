@@ -43,19 +43,28 @@ Tell the user:
 
 ## When debugging with Nodo's output
 
-- **Ask anything (start here):** for almost any codebase question, ask nodo in
-  plain English — it routes to the right answer (blast radius, import path, symbol
-  refs, issues, hubs, concept search, or topics) and prefixes each answer with how
-  it interpreted you:
+- **Ask anything (start here) — but YOU are the brain on top.** `--ask` is
+  offline and deterministic: it returns structured *evidence* fast (blast radius,
+  who-uses, issues, hubs, concept matches, or a project overview) and labels how it
+  interpreted the question with a `[nodo · mode: target]` header. It is heuristic,
+  not authoritative.
 
   ```bash
   python /path/to/nodo/nodo.py . --ask "what breaks if I change lib/auth.ts?"
   python /path/to/nodo/nodo.py . --ask "what should I fix in checkout.ts?"
   python /path/to/nodo/nodo.py . --ask "how does the router reach the database?"
+  python /path/to/nodo/nodo.py . --ask "what does this project do?"
   ```
 
-  Reach for `--ask` before grepping or reading files. The specific flags below are
-  there when you already know exactly which one you want.
+  **Your job:** run `--ask` first (it saves you the grepping/reading), then READ
+  the result and tell the user only the **correct, relevant** parts — apply your
+  judgment, don't blindly echo it. Use the `[nodo · …]` header to check the
+  interpretation: if nodo guessed the wrong lens (e.g. did a concept search when
+  the user meant a specific symbol), re-ask more specifically or use the exact flag
+  below. When correctness matters, confirm against the actual code — nodo finds the
+  spot fast; you guarantee the answer is right. That division (nodo = instant
+  offline evidence, you = the judgment) is what saves time and prevents wrong
+  answers.
 - **Cheapest impact check (preferred over reading files):** to learn what a file
   depends on and what breaks if you change it, run a query instead of opening
   files — it answers in ~200 tokens:

@@ -26,8 +26,31 @@ _ISSUE = re.compile(r'\b(issues?|bugs?|problems?|wrong|smells?|vulnerab|insecure
                     r'todo|fixme|fix|dead\s*code|lint|broken|security|audit|anything\s+bad)\b', re.I)
 _HUB = re.compile(r'\b(hubs?|central|core\s+files?|important\s+files?|main\s+files?|'
                   r'load.bearing|most\s+connected|biggest|key\s+files?|god\s*nodes?)\b', re.I)
-_TOPIC = re.compile(r'\b(topics?|overview|architecture|high.level|summary|structure|'
-                    r'what\s+is\s+this|map\s+of|what.?s\s+in\s+(this|the))\b', re.I)
+_OVERVIEW = re.compile(r'(what\s+does\s+(this|it)\s+(do|project|codebase|app)|what\s+is\s+this|'
+                       r'overview|summari[sz]e|summary|tell\s+me\s+about|high.?level|'
+                       r'explain\s+(the\s+)?(project|codebase|repo|repository|app|application|system)|'
+                       r'describe\s+(this|the)|get\s+me\s+up\s+to\s+speed|onboard)', re.I)
+_BIGGEST = re.compile(r'\b(most\s+complex|complicated|largest|biggest\s+files?|longest\s+files?|'
+                      r'heaviest|most\s+code)\b', re.I)
+_TOPIC = re.compile(r'\b(topics?|architecture|structure|map\s+of|what.?s\s+in\s+(this|the))\b', re.I)
+
+# common verbs/words that are ALSO function names — never treat these as a "symbol"
+# the user is asking about (e.g. "how do I ADD a route" must not match a func add())
+_SYMBOL_STOP = {
+    'add', 'get', 'set', 'run', 'use', 'make', 'call', 'find', 'show', 'list', 'build',
+    'create', 'delete', 'update', 'remove', 'handle', 'parse', 'load', 'save', 'init',
+    'main', 'test', 'new', 'start', 'stop', 'open', 'close', 'read', 'write', 'send',
+    'fetch', 'put', 'app', 'log', 'map', 'data', 'item', 'name', 'type', 'path', 'class',
+    'route', 'view', 'index', 'config', 'setup', 'check', 'apply', 'render', 'process',
+}
+
+
+def _looks_like_symbol(t):
+    """A token is a symbol the user means only if it's distinctive — CamelCase,
+    snake_case, or long — and not a common verb that merely shares a function name."""
+    if t.lower() in _SYMBOL_STOP:
+        return False
+    return any(c.isupper() for c in t) or '_' in t or len(t) >= 6
 # words to drop when falling back to concept search
 _QWORDS = {'what', 'where', 'which', 'who', 'how', 'why', 'when', 'does', 'do', 'is', 'are',
            'the', 'a', 'an', 'of', 'to', 'in', 'on', 'for', 'and', 'or', 'i', 'my', 'me',
@@ -55,7 +78,7 @@ def _resolve_files_and_symbols(question, nodes, symbols_set):
             files.append(by_base[t])
         elif t in by_stem and len(t) >= 2 and t.lower() not in _QWORDS:
             files.append(by_stem[t])
-        elif t in symbols_set:
+        elif t in symbols_set and _looks_like_symbol(t):
             syms.append(t)
     # de-dup preserving order
     return list(dict.fromkeys(files)), list(dict.fromkeys(syms))
@@ -119,6 +142,43 @@ def _topics_answer(ctx):
     return '\n'.join(lines)
 
 
+def _overview_answer(ctx, nodes):
+    code = sum(1 for n in nodes if n.get('kind', 'code') == 'code')
+    edges = ctx.get('stats', {}).get('edges', '?')
+    iss = ctx.get('stats', {}).get('issues', {})
+    hubs = ctx.get('hubs', [])[:5]
+    k = ctx.get('knowledge', {})
+    gods = k.get('god_nodes', [])[:6]
+    topics = k.get('topics', [])[:5]
+    lines = [f'This project: {code} code files, {edges} dependencies'
+             + (f', {len(k.get("concepts", []))} doc concepts' if k.get('concepts') else '') + '.']
+    if hubs:
+        lines.append('Load-bearing files (highest blast radius): '
+                     + ', '.join(h['file'] for h in hubs))
+    if gods:
+        lines.append('Recurring concepts: ' + ', '.join(g['concept'] for g in gods))
+    if topics:
+        lines.append('Topics: ' + ', '.join(t['name'] for t in topics))
+    if iss:
+        lines.append(f'Issues: {iss.get("total", 0)} '
+                     f'({iss.get("error", 0)} errors, {iss.get("warn", 0)} warnings, '
+                     f'{iss.get("info", 0)} info).')
+    lines.append('Drill in: "what are the key files", "what should I fix", '
+                 '"where is <concept>", or "how does <A> connect to <B>".')
+    return '\n'.join(lines)
+
+
+def _biggest_answer(ctx):
+    files = [f for f in ctx.get('files', []) if f.get('kind', 'code') == 'code']
+    if not files:
+        return 'No code files found.'
+    files = sorted(files, key=lambda f: -f.get('loc', 0))[:10]
+    lines = ['Largest files by lines of code (refactor candidates):']
+    for f in files:
+        lines.append(f'  {f["rel"]} — {f.get("loc", 0)} loc')
+    return '\n'.join(lines)
+
+
 def _menu():
     return ("I can answer about this codebase — try:\n"
             "  • \"what breaks if I change <file>?\"      (blast radius + change impact)\n"
@@ -158,7 +218,15 @@ def answer(question, nodes, edges, file_texts, out_dir, docs=None):
         scope = files[0] if files else None
         return _hdr('issues', scope) + _issues_answer(ctx, scope)
 
-    # 4) key files / hubs (when no specific file was named)
+    # 4) overview / "what does this do" / summarize → synthesized project overview
+    if _OVERVIEW.search(question) and not files:
+        return _hdr('overview') + _overview_answer(ctx, nodes)
+
+    # 5) biggest / most-complex files
+    if _BIGGEST.search(question) and not files:
+        return _hdr('largest files') + _biggest_answer(ctx)
+
+    # 6) key files / hubs (when no specific file was named)
     if _HUB.search(question) and not files:
         return _hdr('hubs') + _hubs_answer(ctx)
 

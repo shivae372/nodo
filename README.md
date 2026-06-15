@@ -138,8 +138,14 @@ python nodo.py . --ask "what are the main topics?"              # → knowledge-
 
 Every answer is prefixed with how it was interpreted (e.g. `[nodo · blast radius:
 lib/auth.ts]`), so it's never a black box — and an unrecognized question returns a
-short menu of what nodo can answer. This is the entry point that makes nodo *the*
-place your agent goes for codebase questions.
+short menu of what nodo can answer.
+
+**nodo finds, your agent judges.** `--ask` is offline and deterministic — it hands
+back fast, structured *evidence* (blast radius, who-uses, issues, hubs, overview).
+The AI assistant sitting on top (Claude Code) reads that evidence and tells you the
+*correct, relevant* part. That split is the whole point: nodo does the instant,
+private search; the model does the reasoning — so you get answers without the
+grep-and-guess, and without the model hallucinating structure it didn't verify.
 
 ## It remembers (personalization)
 

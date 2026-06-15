@@ -797,7 +797,8 @@ class TestEndToEnd(unittest.TestCase):
 # ── --ask natural-language router ─────────────────────────────────────────────
 class TestAsk(unittest.TestCase):
     PROJECT = {
-        "src/db.ts": "export function query(s){ return s; }\nexport function connect(){ return 1; }\n",
+        "src/db.ts": "export function query(s){ return s; }\nexport function connect(){ return 1; }\n"
+                     "export function add(a, b){ return a + b; }\n",
         "src/service.ts": "import {query} from './db';\nexport function getUser(id){ return query('x'); }\n",
         "src/api.ts": "import {getUser} from './service';\nexport const route = () => getUser(1);\n",
         "src/main.ts": "import './api';\nconsole.log('boot');\n",
@@ -831,6 +832,20 @@ class TestAsk(unittest.TestCase):
     def test_hubs(self):
         out = self._ask("what are the key files")
         self.assertIn("hub", out.lower())
+
+    def test_overview(self):
+        out = self._ask("what does this project do")
+        self.assertIn("overview", out)
+        self.assertIn("code files", out)
+
+    def test_biggest_files(self):
+        out = self._ask("what is the largest file")
+        self.assertIn("Largest files", out)
+
+    def test_common_verb_not_treated_as_symbol(self):
+        # db.ts defines add(); "how do I add a route" must NOT route to symbol `add`
+        out = self._ask("how do I add a route")
+        self.assertNotIn("symbol: add", out)
 
     def test_fallback_menu(self):
         out = self._ask("zzzqqq nonsense")
