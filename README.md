@@ -316,9 +316,21 @@ python nodo.py . --docs-only       # docs text only, skip binary assets
 
 Run bare (`python nodo.py .`) on a terminal and Nodo **asks** whether to include
 images/PDFs; in scripts and agent runs it defaults to docs-only (no prompt, no
-heavy work). Assets are **linked to the nodes that reference them** (e.g. an
-`<img src="diagram.png">` or `![](arch.pdf)` in a doc) and listed in
-`nodo-context.json` → `assets`.
+heavy work).
+
+**Everything connects in one graph.** Docs and assets aren't a side list — they
+become real nodes:
+
+- **doc nodes** link to the code they describe — by markdown link *and* by module
+  name, so a spec that mentions `AudioEngine` connects to `AudioEngine.js` (great
+  for spotting "spec exists, implementation is disconnected").
+- **asset nodes** (images/PDFs/video) link from every code/doc file that
+  references them (`<img src="diagram.png">`, `![](arch.pdf)`).
+
+These **reference edges** (`kind: "reference"`, drawn dashed) are distinct from
+code **import edges** (`kind: "import"`), so the viewer shows the whole connected
+picture while `--query`/`--path` keep tracing imports only. The full node + edge
+set (with `kind`) is in `nodo-context.json`.
 
 Nodo's core never sends anything over the network, so it does not *interpret*
 image pixels itself — it locates each asset and wires it to the right nodes, and
@@ -332,13 +344,14 @@ Nodo defaults to a fast, dependency-free regex extractor. For deeper accuracy on
 large TypeScript/Python codebases you can opt into real parse trees:
 
 ```bash
-pip install tree-sitter tree-sitter-languages
+pip install tree-sitter tree-sitter-language-pack
 python nodo.py . --ast
 ```
 
-If tree-sitter isn't installed, `--ast` prints a one-line note and silently uses
-the regex path — the zero-dependency promise is never broken. (Experimental;
-the regex path remains the tested default.)
+The AST extractor uses real parse trees, so it ignores import-like strings in
+comments and distinguishes a genuine `require(...)` from an identically-named
+function call. If tree-sitter isn't installed, `--ast` prints a one-line note and
+silently uses the regex path — the zero-dependency promise is never broken.
 
 ---
 

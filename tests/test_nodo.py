@@ -299,6 +299,85 @@ class TestEdgeCases(unittest.TestCase):
         self.assertEqual(edges, [])  # a file never depends on itself
 
 
+# ── Unified graph: docs + assets as connected nodes ───────────────────────────
+class TestGraphIntegration(unittest.TestCase):
+    def test_doc_links_to_module_by_stem(self):
+        from nodo import graphmerge
+        d, nodes, edges, _ = graph({
+            "src/AudioEngine.ts": "export class AudioEngine {}\n",
+            "src/main.ts": "export const x=1\n",
+            "docs/spec.md": "# Audio\nThe AudioEngine module implements the features.\n",
+        })
+        docs = scanner.discover_docs(d, scanner.DEFAULT_IGNORE_DIRS)
+        comms = {n["id"]: 0 for n in nodes}
+        unodes, uedges, _ = graphmerge.integrate(nodes, edges, comms, docs, [], d)
+        rel2id = {n["rel"]: n["id"] for n in unodes}
+        kinds = {n["rel"]: n["kind"] for n in unodes}
+        self.assertEqual(kinds.get("docs/spec.md"), "doc")
+        ref = {(e["source"], e["target"]) for e in uedges if e.get("kind") == "reference"}
+        self.assertIn((rel2id["docs/spec.md"], rel2id["src/AudioEngine.ts"]), ref,
+                      "a doc naming the module should link to it")
+
+    def test_asset_becomes_connected_node(self):
+        from nodo import graphmerge, assets as assetmod
+        d, nodes, edges, _ = graph({
+            "docs/readme.md": "![logo](img/logo.png)\n",
+            "src/ui.ts": "export const x=1\n",
+        })
+        os.makedirs(os.path.join(d, "docs/img"), exist_ok=True)
+        Path(d, "docs/img/logo.png").write_bytes(b"PNG")
+        raw = scanner.discover_assets(d, scanner.DEFAULT_IGNORE_DIRS)
+        docs = scanner.discover_docs(d, scanner.DEFAULT_IGNORE_DIRS)
+        linked = assetmod.link_assets(d, raw, nodes, docs)
+        comms = {n["id"]: 0 for n in nodes}
+        unodes, uedges, _ = graphmerge.integrate(nodes, edges, comms, docs, linked, d)
+        rel2id = {n["rel"]: n["id"] for n in unodes}
+        kinds = {n["rel"]: n["kind"] for n in unodes}
+        self.assertEqual(kinds.get("docs/img/logo.png"), "asset")
+        targets = {e["target"] for e in uedges if e.get("kind") == "reference"}
+        self.assertIn(rel2id["docs/img/logo.png"], targets, "asset should be referenced")
+
+    def test_query_blast_radius_excludes_reference_edges(self):
+        d = make_project({
+            "src/Engine.ts": "export class Engine {}\n",
+            "src/use.ts": "import {Engine} from './Engine';\nnew Engine();\n",
+            "docs/spec.md": "The Engine module is documented here.\n",
+        })
+        subprocess.run([sys.executable, "-m", "nodo", d], cwd=str(REPO), capture_output=True)
+        r = subprocess.run([sys.executable, "-m", "nodo", d, "--query", "src/Engine.ts"],
+                           cwd=str(REPO), capture_output=True, text=True)
+        self.assertIn("use.ts", r.stdout)               # real import dependent
+        self.assertNotIn("spec.md", r.stdout)           # doc reference must NOT count
+
+
+# ── Optional tree-sitter AST backend (skips if not installed) ─────────────────
+class TestAST(unittest.TestCase):
+    def test_ast_extracts_and_ignores_normal_calls(self):
+        from nodo import ast_index
+        if not ast_index.available():
+            self.skipTest("tree-sitter not installed")
+        imps = ast_index.extract_imports_ast(
+            "a.js", "import {x} from './x';\nconst y=require('./y');\nfoo('z');\nimport('./w');\n")
+        self.assertIn("./x", imps)
+        self.assertIn("./y", imps)
+        self.assertIn("./w", imps)
+        self.assertNotIn("z", imps)   # a normal call is not an import
+
+    def test_ast_mode_resolves_same_edges(self):
+        from nodo import ast_index
+        if not ast_index.available():
+            self.skipTest("tree-sitter not installed")
+        scanner.enable_ast()
+        try:
+            _, nodes, edges, _ = graph({
+                "a.js": "import {b} from './b';\n",
+                "b.js": "export const b = 1;\n",
+            })
+            self.assertIn(("a.js", "b.js"), edge_pairs(nodes, edges))
+        finally:
+            scanner._USE_AST = False
+
+
 # ── End-to-end CLI ────────────────────────────────────────────────────────────
 class TestEndToEnd(unittest.TestCase):
     def test_cli_writes_valid_artifacts(self):

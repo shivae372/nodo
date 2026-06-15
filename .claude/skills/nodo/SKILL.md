@@ -113,14 +113,17 @@ hook always serves the latest `.nodo/nodo-context.md`.
 
 - Nodo is pure standard-library Python (3.8+). No pip install or npm needed.
 - It never makes network calls; code stays local.
-- **Multimodal:** `--multimodal` links images/PDFs/video to the nodes that
-  reference them and lists them in `nodo-context.json` → `assets`. Nodo locates
-  and links the assets; *you* (Claude) read the image/PDF contents with your own
-  vision when the user asks. `--docs-only` indexes doc text but skips binary
-  assets. Bare runs on a terminal prompt for which to use; default is docs-only.
+- **Multimodal + unified graph:** docs and assets are first-class graph nodes,
+  not a side list. Doc nodes link to the code they describe (by markdown link AND
+  by module name — a spec naming `AudioEngine` connects to `AudioEngine.js`);
+  asset nodes (images/PDFs/video) link from whatever references them. These
+  `kind:"reference"` edges are separate from code `kind:"import"` edges, so
+  `--query`/`--path` still trace imports only. `--multimodal` includes binary
+  assets; *you* (Claude) read their contents with your own vision when asked.
+  `--docs-only` skips binary assets. Bare TTY runs prompt; default is docs-only.
 - **Optional accuracy:** `--ast` uses tree-sitter when installed
-  (`pip install tree-sitter tree-sitter-languages`) and silently falls back to
-  the zero-dep regex extractor otherwise — never required.
+  (`pip install tree-sitter tree-sitter-language-pack`) and silently falls back
+  to the zero-dep regex extractor otherwise — never required.
 - Custom project rules live in `.nodo.json` at the project root (`nodo --init`
   writes a starter). Add regex rules there to flag project-specific smells.
 - The HTML inlines vis-network from `nodo/vendor/vis-network.min.js`, so the

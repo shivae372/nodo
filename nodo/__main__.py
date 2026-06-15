@@ -244,11 +244,18 @@ def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):
     elif not quiet and docs:
         print(f'  {len(docs)} docs indexed')
 
+    # Unify the graph: add doc + asset nodes and reference edges so everything is
+    # connected in the rendered graph / context.json. Detectors above already ran
+    # on the code-only graph, so this never affects structural analysis.
+    from . import graphmerge
+    u_nodes, u_edges, u_comm = graphmerge.integrate(
+        nodes, edges, communities, docs, assets, str(root))
+
     result = render(
         out_dir=out_dir,
         project_name=project_name,
         abs_root=str(root).replace('\\', '/'),
-        nodes=nodes, edges=edges, communities=communities,
+        nodes=u_nodes, edges=u_edges, communities=u_comm,
         comm_summaries=comm_sum, issues=issues,
         community_names=cfg.get('community_names'),
         flows=flows, sensitive=sensitive, apis=apis,

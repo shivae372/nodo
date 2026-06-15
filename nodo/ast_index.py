@@ -1,46 +1,54 @@
 """
-Optional tree-sitter backend (EXPERIMENTAL) — accurate import/symbol extraction.
+Optional tree-sitter backend — accurate import/symbol extraction via real parse
+trees. Enabled with `--ast`.
 
-Off by default. Enabled with `--ast`. Nodo's promise is clone-and-run with zero
-dependencies, so this module is the *only* place that touches a third-party
-library, it is imported lazily, and EVERY failure path returns None so the
-caller silently falls back to the regex extractor. Installing tree-sitter only
-*upgrades* accuracy; its absence never breaks a run.
+Nodo's promise is clone-and-run with zero dependencies, so this is the ONLY
+module that touches a third-party library, it is imported lazily, and EVERY
+failure path returns None so the caller silently falls back to the regex
+extractor. Installing tree-sitter only *upgrades* accuracy; its absence never
+breaks a run.
 
-To use:  pip install tree-sitter tree-sitter-languages   (then run with --ast)
+    pip install tree-sitter tree-sitter-language-pack        # then run with --ast
 
-Why it matters: the regex resolver can't see through generics, decorators, or
-re-export barrels. A real parse tree can — which (later) lets the deliberately
-disabled arg-count contract check be turned back on without false positives.
+Why it matters: a parse tree catches imports the regex can miss (multi-line,
+unusual formatting, re-export edge cases) and distinguishes a real `require(...)`
+from an identically-named function call — so more edges resolve and fewer files
+look like false orphans.
 """
 import os
 
-_PARSERS = {}          # ext -> parser | None (cache; None = unavailable)
+_PARSERS = {}          # ext -> parser | None (cache)
 _CHECKED = False
 _AVAILABLE = False
+_GET_PARSER = None
 
-# ext -> tree-sitter-languages name
+# ext -> tree-sitter language name (as known to tree_sitter_language_pack)
 _LANG_NAME = {
     '.py': 'python',
     '.js': 'javascript', '.jsx': 'javascript', '.mjs': 'javascript', '.cjs': 'javascript',
     '.ts': 'typescript', '.tsx': 'tsx', '.mts': 'typescript', '.cts': 'typescript',
     '.go': 'go', '.rs': 'rust', '.java': 'java', '.rb': 'ruby', '.php': 'php',
-    '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.hpp': 'cpp', '.cc': 'cpp', '.cs': 'c_sharp',
+    '.c': 'c', '.h': 'c', '.cpp': 'cpp', '.hpp': 'cpp', '.cc': 'cpp', '.cs': 'csharp',
 }
+
+_PY = {'.py'}
+_JS = {'.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts'}
 
 
 def available():
-    """True if tree-sitter is importable. Never raises."""
-    global _CHECKED, _AVAILABLE
+    """True if a tree-sitter parser backend is importable. Never raises."""
+    global _CHECKED, _AVAILABLE, _GET_PARSER
     if _CHECKED:
         return _AVAILABLE
     _CHECKED = True
     try:
-        import tree_sitter_languages  # noqa: F401
+        from tree_sitter_language_pack import get_parser
+        _GET_PARSER = get_parser
         _AVAILABLE = True
     except Exception:
         try:
-            import tree_sitter  # noqa: F401  (some setups register grammars differently)
+            from tree_sitter_languages import get_parser  # older fallback
+            _GET_PARSER = get_parser
             _AVAILABLE = True
         except Exception:
             _AVAILABLE = False
@@ -54,8 +62,7 @@ def _get_parser(ext):
     name = _LANG_NAME.get(ext)
     if name and available():
         try:
-            from tree_sitter_languages import get_parser
-            parser = get_parser(name)
+            parser = _GET_PARSER(name)
         except Exception:
             parser = None
     _PARSERS[ext] = parser
@@ -78,34 +85,64 @@ def extract_imports_ast(rel, text):
     if parser is None:
         return None
     try:
-        tree = parser.parse(bytes(text, 'utf-8'))
         src = text.encode('utf-8')
-        out = []
+        tree = parser.parse(src)
 
         def txt(node):
             return src[node.start_byte:node.end_byte].decode('utf-8', 'ignore')
 
-        for n in _walk(tree.root_node):
-            t = n.type
-            # JS/TS: import ... from 'x'  /  require('x')  /  import('x')
-            if t in ('import_statement', 'export_statement', 'import_require_clause',
-                     'call_expression'):
-                for c in _walk(n):
-                    if c.type in ('string', 'string_fragment'):
-                        s = txt(c).strip('\'"`')
-                        if s and ('/' in s or s.startswith('.') or s.isidentifier()):
-                            out.append(s)
-                            break
-            # Python: import a.b / from a.b import c
-            elif t == 'import_from_statement':
-                mod = n.child_by_field_name('module_name')
-                if mod is not None:
-                    out.append(txt(mod))
-            elif t == 'import_statement' and rel.endswith('.py'):
-                out.append(txt(n).replace('import', '', 1).strip().split(' as ')[0].split(',')[0].strip())
-        # de-dup, keep order
+        def field(node, name):
+            try:
+                return node.child_by_field_name(name)
+            except Exception:
+                return None
+
+        out = []
+        if ext in _PY:
+            for n in _walk(tree.root_node):
+                if n.type == 'import_from_statement':
+                    m = field(n, 'module_name')
+                    if m is None:
+                        for c in n.children:
+                            if c.type in ('relative_import', 'dotted_name'):
+                                m = c
+                                break
+                    if m is not None:
+                        out.append(txt(m))
+                elif n.type == 'import_statement':
+                    for c in n.children:
+                        if c.type == 'dotted_name':
+                            out.append(txt(c))
+                        elif c.type == 'aliased_import':
+                            nm = field(c, 'name')
+                            if nm is not None:
+                                out.append(txt(nm))
+        elif ext in _JS:
+            for n in _walk(tree.root_node):
+                if n.type in ('import_statement', 'export_statement'):
+                    s = field(n, 'source')
+                    if s is None:
+                        for c in n.children:
+                            if c.type == 'string':
+                                s = c
+                                break
+                    if s is not None:
+                        out.append(txt(s).strip('\'"`'))
+                elif n.type == 'call_expression':
+                    fn = field(n, 'function')
+                    if fn is not None and txt(fn) in ('require', 'import'):
+                        args = field(n, 'arguments')
+                        if args is not None:
+                            for c in _walk(args):
+                                if c.type in ('string', 'string_fragment'):
+                                    out.append(txt(c).strip('\'"`'))
+                                    break
+        else:
+            return None  # no AST handler for this language → use regex
+
         seen, uniq = set(), []
         for s in out:
+            s = s.strip()
             if s and s not in seen:
                 seen.add(s)
                 uniq.append(s)

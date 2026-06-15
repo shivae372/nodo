@@ -22,6 +22,12 @@ classifiers = [
 # Zero runtime dependencies — pure standard library.
 dependencies = []
 
+# Optional accuracy/multimodal extras. The core never needs these; they only
+# light up behind --ast / --multimodal and degrade gracefully when absent.
+[project.optional-dependencies]
+ast = ["tree-sitter>=0.21", "tree-sitter-language-pack>=0.1"]
+multimodal = ["pypdf>=3.0"]
+
 [project.urls]
 Homepage = "https://github.com/shivae372/nodo"
 Issues = "https://github.com/shivae372/nodo/issues"

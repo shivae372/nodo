@@ -25,6 +25,8 @@ CAT_STYLE = {
     'style':     {'bg': '#f59e0b', 'bd': '#d97706', 'name': 'Style'},
     'config':    {'bg': '#a855f7', 'bd': '#7c3aed', 'name': 'Config'},
     'test':      {'bg': '#22c55e', 'bd': '#15803d', 'name': 'Test'},
+    'doc':       {'bg': '#0ea5e9', 'bd': '#0369a1', 'name': 'Doc / Spec'},
+    'asset':     {'bg': '#f97316', 'bd': '#c2410c', 'name': 'Asset (image/PDF/video)'},
     'other':     {'bg': '#94a3b8', 'bd': '#64748b', 'name': 'Other'},
 }
 
@@ -72,11 +74,14 @@ def render(out_dir, project_name, abs_root, nodes, edges, communities,
     n_warn = sum(1 for x in issues if x['severity'] == 'warn')
     n_info = sum(1 for x in issues if x['severity'] == 'info')
 
-    # hubs (top authored nodes)
+    # hubs (top CODE nodes only — docs/assets are not "load-bearing files")
+    code_ids = {n['id'] for n in nodes if n.get('kind', 'code') == 'code'}
     hub_list = []
     for nid, d in ranked:
         if d == 0:
             break
+        if nid not in code_ids:
+            continue
         n = id_to_node[nid]
         hub_list.append({'label': n['label'], 'file': n['rel'], 'edges': d})
         if len(hub_list) >= 15:
@@ -94,9 +99,16 @@ def render(out_dir, project_name, abs_root, nodes, edges, communities,
 
     # ── vis nodes/edges ──
     vis_nodes = _build_vis_nodes(nodes, deg, rank_of, communities, issue_by_file)
-    vis_edges = [{'from': e['source'], 'to': e['target'],
-                  'color': {'color': '#cbd5e1', 'opacity': 0.35}, 'width': 1}
-                 for e in edges]
+    vis_edges = []
+    for e in edges:
+        if e.get('kind') == 'reference':
+            # doc/asset reference edges: dashed violet so they read as "describes /
+            # references", distinct from solid code import edges.
+            vis_edges.append({'from': e['source'], 'to': e['target'], 'dashes': True,
+                              'color': {'color': '#a78bfa', 'opacity': 0.55}, 'width': 1})
+        else:
+            vis_edges.append({'from': e['source'], 'to': e['target'],
+                              'color': {'color': '#cbd5e1', 'opacity': 0.35}, 'width': 1})
 
     stats = {
         'nodes': len(nodes), 'edges': len(edges),
@@ -197,6 +209,7 @@ def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
         'files': [
             {'id': n['id'], 'rel': n['rel'], 'category': n['category'],
              'loc': n.get('loc', 0), 'tier': n.get('tier', 'app'),
+             'kind': n.get('kind', 'code'),
              'community': communities.get(n['id'], 0),
              'hub_rank': rank_of.get(n['id'])}
             for n in nodes

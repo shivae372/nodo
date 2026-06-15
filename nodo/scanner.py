@@ -394,6 +394,7 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
             'category': categorize(rel),
             'loc': loc,
             'tier': tier_of(rel, reference_segments),
+            'kind': 'code',
         })
 
     seen = set()
@@ -406,6 +407,6 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
                 key = (src_id, id_of[resolved])
                 if key not in seen:
                     seen.add(key)
-                    edges.append({'source': src_id, 'target': id_of[resolved]})
+                    edges.append({'source': src_id, 'target': id_of[resolved], 'kind': 'import'})
 
     return nodes, edges, file_texts

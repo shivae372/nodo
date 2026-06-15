@@ -100,6 +100,8 @@ def path_between(out_dir, needle_a, needle_b):
     by_id = {n['id']: n['rel'] for n in ctx['files']}
     out_adj = {}
     for e in ctx.get('edges', []):
+        if e.get('kind', 'import') != 'import':
+            continue  # trace import chains only, not doc/asset references
         out_adj.setdefault(e['source'], []).append(e['target'])
 
     fwd = _bfs_path(a['id'], b['id'], out_adj)
@@ -213,6 +215,8 @@ def query_file(out_dir, needle):
     dependents = []   # who imports this (breaks if I change its API)
     dependencies = [] # what this imports
     for e in ctx.get('edges', []):
+        if e.get('kind', 'import') != 'import':
+            continue  # reference (doc/asset) edges aren't import dependencies
         if e['target'] == node_id:
             dependents.append(by_id[e['source']]['rel'])
         if e['source'] == node_id:
