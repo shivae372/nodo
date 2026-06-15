@@ -150,7 +150,7 @@ def integrate(code_nodes, code_edges, communities, docs, assets, root,
             if (len(rels) == 1 and len(stem) >= 4 and stem.lower() not in _COMMON_STEMS
                     and re.search(r'(?<![\w.])' + re.escape(stem) + r'(?![\w.])', text)):
                 targets.add(rels[0])
-        for r in list(targets)[:max_doc_edges]:
+        for r in sorted(targets)[:max_doc_edges]:   # sorted: deterministic order + cap
             add_edge(nid, rel_to_id.get(r))
 
     # ── (code | doc) → asset edges, from the asset's referenced_by list ──
