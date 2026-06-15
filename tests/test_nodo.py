@@ -539,6 +539,35 @@ class TestVisionLoop(unittest.TestCase):
         self.assertIn("docs/diagram.png", doc_texts)
         self.assertIn("auth service", doc_texts["docs/diagram.png"])
 
+    def test_short_vision_description_rejected(self):
+        # quality gate: a too-short/vague description is NOT ingested
+        from nodo import scanner, assets as A
+        d = make_project({"docs/readme.md": "see image\n"})
+        Path(d, "docs/i.png").write_bytes(b"PNG")
+        out = Path(d) / ".nodo"
+        (out / "converted").mkdir(parents=True, exist_ok=True)
+        (out / "converted" / "docs__i.png.md").write_text("img")   # too short
+        nodes, _, _ = scanner.build_graph(d)
+        docs = scanner.discover_docs(d, scanner.DEFAULT_IGNORE_DIRS)
+        raw = scanner.discover_assets(d, scanner.DEFAULT_IGNORE_DIRS)
+        linked = A.link_assets(d, raw, nodes, docs)
+        doc_texts = dict(docs)
+        A.convert_assets(d, out, linked, doc_texts)
+        self.assertNotIn("docs/i.png", doc_texts)
+
+    def test_ask_describe_returns_pinned_vision(self):
+        d = make_project({"src/app.js": "export const a=1;\n", "docs/readme.md": "see the diagram\n"})
+        Path(d, "docs/arch.png").write_bytes(b"PNGDATA")
+        subprocess.run([sys.executable, "-m", "nodo", d, "--full"], cwd=str(REPO), capture_output=True)
+        conv = Path(d) / ".nodo" / "converted"
+        conv.mkdir(parents=True, exist_ok=True)
+        (conv / "docs__arch.png.md").write_text(
+            "Architecture diagram showing the auth service calling the database layer.")
+        subprocess.run([sys.executable, "-m", "nodo", d, "--full"], cwd=str(REPO), capture_output=True)
+        r = subprocess.run([sys.executable, "-m", "nodo", d, "--ask", "describe the architecture diagram"],
+                           cwd=str(REPO), capture_output=True, text=True)
+        self.assertIn("auth service", r.stdout)
+
 
 class TestConfidence(unittest.TestCase):
     def test_every_issue_has_confidence(self):

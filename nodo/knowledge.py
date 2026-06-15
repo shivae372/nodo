@@ -26,7 +26,15 @@ def build_knowledge(doc_texts, max_concepts_per_doc=8, max_global_concepts=250):
     from .search import tokenize
     from .clustering import detect_communities
 
-    docs = {rel: Counter(tokenize(t)) for rel, t in (doc_texts or {}).items() if t}
+    def _tf(text):
+        tf = Counter(tokenize(text))
+        for line in text.split('\n'):           # Markdown headings name the topic → weight them
+            if line.lstrip().startswith('#'):
+                for w in tokenize(line):
+                    tf[w] += 2
+        return tf
+
+    docs = {rel: _tf(t) for rel, t in (doc_texts or {}).items() if t}
     N = len(docs)
     if N == 0:
         return {'concepts': [], 'doc_concepts': {}, 'concept_docs': {}, 'topics': []}

@@ -90,8 +90,10 @@ def convert_assets(root, out_dir, assets, doc_texts):
             # written here by an agent's VISION — Claude Code reads the file and
             # saves what it sees. Preserve it and fold it into the knowledge graph:
             # this is how image/diagram understanding enters the graph, offline.
+            # Quality gate: ignore too-short/vague descriptions (flag for re-run).
             try:
-                md = target.read_text(encoding='utf-8', errors='ignore').strip() or None
+                vis = target.read_text(encoding='utf-8', errors='ignore').strip()
+                md = vis if len(vis) >= 15 else None
             except Exception:
                 md = None
         if not md:

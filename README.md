@@ -431,6 +431,24 @@ Conversion uses Microsoft **markitdown** when installed (widest format support),
 and falls back to **pypdf** for PDFs (and direct reads for HTML/CSV) otherwise —
 all fully offline. Images stay linked for Claude's vision to interpret.
 
+### Images & diagrams — the vision loop
+
+nodo can't read pixels (it's offline), but Claude Code can — so they team up:
+
+1. nodo links each image/diagram as a node and flags it as undescribed.
+2. You ask Claude to look at it; Claude writes a 2–3 sentence description to
+   `.nodo/converted/<file>.md` (the skill spells this out).
+3. On the next scan nodo **pins that description to the node and folds it into the
+   knowledge graph** (so the diagram's content drives concepts/topics), with a
+   quality gate that ignores too-short/vague descriptions.
+4. Anyone can then ask `--ask "describe the architecture diagram"` and get the
+   pinned vision text instantly — no re-reading the image, no tokens burned.
+
+That's the division of labour end-to-end: **nodo does the deterministic, offline
+plumbing (extract, link, cluster, convert, pin); Claude supplies the vision and
+the judgment.** A richer multimodal map than static extraction, at a fraction of
+the weight — and nothing leaves your machine unless you ask Claude to look.
+
 ### Knowledge graph (docs + PDFs → topics, queryable by AI)
 
 Beyond linking, Nodo mines the **content** of your docs and PDFs into a knowledge

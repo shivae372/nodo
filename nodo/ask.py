@@ -32,6 +32,11 @@ _OVERVIEW = re.compile(r'(what\s+does\s+(this|it)\s+(do|project|codebase|app)|wh
                        r'describe\s+(this|the)|get\s+me\s+up\s+to\s+speed|onboard)', re.I)
 _BIGGEST = re.compile(r'\b(most\s+complex|complicated|largest|biggest\s+files?|longest\s+files?|'
                       r'heaviest|most\s+code)\b', re.I)
+_ASSET_WORDS = re.compile(r'\b(diagram|image|images|screenshot|figure|chart|photo|picture|'
+                          r'pdf|mockup|wireframe|drawing|asset)\b', re.I)
+_DESCRIBE = re.compile(r'\b(describe|show|what.?s\s+in|whats\s+in|contents?\s+of|look\s+at|'
+                       r'read|see|explain)\b', re.I)
+_IMG_TYPES = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'pdf', 'mp4', 'mov'}
 _TOPIC = re.compile(r'\b(topics?|architecture|structure|map\s+of|what.?s\s+in\s+(this|the))\b', re.I)
 
 # common verbs/words that are ALSO function names — never treat these as a "symbol"
@@ -179,6 +184,53 @@ def _biggest_answer(ctx):
     return '\n'.join(lines)
 
 
+def _resolve_assets(question, ctx):
+    """Assets (images/PDFs/diagrams) named or implied in the question."""
+    assets = ctx.get('assets', [])
+    if not assets:
+        return []
+    ql = question.lower()
+    toks = set(re.findall(r'[A-Za-z_][\w./-]*', ql))
+    hits = []
+    for a in assets:
+        rel = a['rel'].lower()
+        b = rel.split('/')[-1]
+        stem = re.sub(r'\.[^./]+$', '', b)
+        if rel in ql or b in toks or (len(stem) >= 4 and stem in toks):
+            hits.append(a)
+    if hits:
+        return hits
+    # word-based ("the diagram", "the pdf") → match by stem, else the visual assets
+    if _ASSET_WORDS.search(question):
+        imgs = [a for a in assets if a['type'] in _IMG_TYPES]
+        for a in imgs:
+            stem = re.sub(r'\.[^./]+$', '', a['rel'].split('/')[-1]).lower()
+            if any(len(t) >= 4 and (t in stem or stem in t) for t in toks):
+                return [a]
+        return imgs[:3]
+    return []
+
+
+def _asset_answer(assets, out_dir):
+    lines = []
+    for a in assets[:3]:
+        lines.append(f'[nodo · asset: {a["rel"]}]')
+        conv = a.get('converted')
+        if conv:
+            try:
+                txt = (Path(out_dir) / conv).read_text(encoding='utf-8', errors='ignore').strip()
+            except Exception:
+                txt = ''
+            lines.append(txt[:1800] if txt else '(empty description)')
+        else:
+            lines.append('No description yet. Open this file, read it with your vision, and save a '
+                         '2–3 sentence description to `' +
+                         '.nodo/converted/' + a['rel'].replace('/', '__') + '.md` — '
+                         'nodo will pin it into the graph on the next scan.')
+        lines.append('')
+    return '\n'.join(lines).strip()
+
+
 def _menu():
     return ("I can answer about this codebase — try:\n"
             "  • \"what breaks if I change <file>?\"      (blast radius + change impact)\n"
@@ -196,6 +248,12 @@ def answer(question, nodes, edges, file_texts, out_dir, docs=None):
     ctx = _ctx(out_dir)
     idx = build_symbol_index(nodes, file_texts)
     files, syms = _resolve_files_and_symbols(question, nodes, set(idx))
+
+    # 0) "describe the diagram / what's in <image>.pdf" → the asset's vision/converted text
+    if _DESCRIBE.search(question) or _ASSET_WORDS.search(question):
+        hits = _resolve_assets(question, ctx)
+        if hits:
+            return _asset_answer(hits, out_dir)
 
     # 1) "what breaks if I change <file>" → blast radius + change impact
     if files and _IMPACT.search(question):
