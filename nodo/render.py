@@ -39,13 +39,15 @@ def _sev_size(d):
 
 def render(out_dir, project_name, abs_root, nodes, edges, communities,
            comm_summaries, issues, community_names=None,
-           flows=None, sensitive=None, apis=None):
+           flows=None, sensitive=None, apis=None, docs=None, assets=None):
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     community_names = community_names or {}
     flows = flows or []
     sensitive = sensitive or []
     apis = apis or []
+    docs = docs or {}
+    assets = assets or []
 
     build_date = datetime.date.today().isoformat()
     build_ts = datetime.datetime.now().isoformat(timespec='seconds')
@@ -87,7 +89,8 @@ def render(out_dir, project_name, abs_root, nodes, edges, communities,
 
     # ── artifacts: JSON + MD + TXT ──
     _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
-                     comm_display, issues, hub_list, deg, rank_of, flows, sensitive, apis)
+                     comm_display, issues, hub_list, deg, rank_of, flows, sensitive, apis,
+                     docs, assets)
 
     # ── vis nodes/edges ──
     vis_nodes = _build_vis_nodes(nodes, deg, rank_of, communities, issue_by_file)
@@ -160,10 +163,12 @@ def _build_vis_nodes(nodes, deg, rank_of, communities, issue_by_file):
 
 def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
                      comm_display, issues, hub_list, deg, rank_of,
-                     flows=None, sensitive=None, apis=None):
+                     flows=None, sensitive=None, apis=None, docs=None, assets=None):
     flows = flows or []
     sensitive = sensitive or []
     apis = apis or []
+    docs = docs or {}
+    assets = assets or []
     n_err = sum(1 for x in issues if x['severity'] == 'error')
     n_warn = sum(1 for x in issues if x['severity'] == 'warn')
     n_info = sum(1 for x in issues if x['severity'] == 'info')
@@ -183,11 +188,16 @@ def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
         'flows': flows,
         'sensitive': sensitive,
         'api_routes': apis,
+        # design docs (paths only; full text stays on disk) + multimodal asset
+        # manifest linking images/PDFs/video to the nodes that reference them.
+        'docs': sorted(docs.keys()),
+        'assets': assets,
         # compact file + edge tables so `--query` can answer blast-radius
         # questions without re-scanning the project.
         'files': [
             {'id': n['id'], 'rel': n['rel'], 'category': n['category'],
-             'loc': n.get('loc', 0), 'community': communities.get(n['id'], 0),
+             'loc': n.get('loc', 0), 'tier': n.get('tier', 'app'),
+             'community': communities.get(n['id'], 0),
              'hub_rank': rank_of.get(n['id'])}
             for n in nodes
         ],
@@ -223,6 +233,21 @@ def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
         for f in flows[:12]:
             reaches = ', '.join(f['reaches'][:8])
             md.append(f'- `{f["entry"]}` → {f["reach_count"]} files: {reaches}')
+
+    if docs:
+        md.append('\n## Design docs (intent — judge code against these)\n')
+        md.append('Specs/READMEs in this repo. Use `--explain "<concept>"` to find the '
+                  'doc that defines a feature, then compare against the code.\n')
+        for rel in sorted(docs)[:30]:
+            md.append(f'- `{rel}`')
+
+    if assets:
+        md.append('\n## Multimodal assets (images / PDFs / video)\n')
+        md.append('Linked to the nodes that reference them. To interpret their *contents*, '
+                  'open the file directly (Claude can read images & PDFs).\n')
+        for a in assets[:30]:
+            ref = ', '.join(f'`{r}`' for r in a.get('referenced_by', [])[:3]) or '—'
+            md.append(f'- `{a["rel"]}` ({a["type"]}) — referenced by: {ref}')
 
     md.append('\n## Modules\n')
     md.append('| # | Name | Size |')

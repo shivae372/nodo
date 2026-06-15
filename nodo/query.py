@@ -12,6 +12,7 @@ Reads .nodo/nodo-context.json if present; if missing, the caller should run a
 normal scan first.
 """
 import json
+import re
 from pathlib import Path
 
 
@@ -37,15 +38,23 @@ def _find_node(ctx, needle):
     cands = [n for n in nodes if n['rel'].endswith('/' + needle) or n['rel'].endswith(needle)]
     if len(cands) == 1:
         return cands[0]
-    # basename
+    # basename (with extension)
     base = needle.split('/')[-1]
     bcands = [n for n in nodes if n['rel'].split('/')[-1] == base]
     if len(bcands) == 1:
         return bcands[0]
+    # basename stem (no extension) — lets `--query AudioEngine` match AudioEngine.js
+    stem = re.sub(r'\.[^./]+$', '', base)
+    scands = [n for n in nodes
+              if re.sub(r'\.[^./]+$', '', n['rel'].split('/')[-1]) == stem]
+    if len(scands) == 1:
+        return scands[0]
     if cands:
         return cands  # ambiguous — return list for the caller to disambiguate
     if bcands:
         return bcands
+    if scands:
+        return scands
     return None
 
 
@@ -105,13 +114,17 @@ def path_between(out_dir, needle_a, needle_b):
             "(no directed path either way).")
 
 
-def explain_concept(out_dir, concept, file_texts=None, limit=12):
+def explain_concept(out_dir, concept, file_texts=None, docs=None, limit=12):
     """BM25 'where does <concept> live' search — zero-dependency, no model.
 
     Builds a BM25 index over file paths + content (code-aware tokenizer), expands
     the query with concept synonyms, and returns the best-matching files with
     their module and issue counts. file_texts (rel->text) gives content ranking;
     without it, ranks on path tokens alone.
+
+    `docs` (rel->text of markdown/spec files) folds design documents into the same
+    index, so `--explain "audio features"` surfaces the spec that defines them —
+    this is what lets nodo judge code against intent, not just structure.
     """
     from .search import BM25, tokenize, expand_query
     ctx = _load_context(out_dir)
@@ -125,16 +138,22 @@ def explain_concept(out_dir, concept, file_texts=None, limit=12):
             issues_by_file.setdefault(i['file'], []).append(i)
 
     # Build documents: path tokens repeated (path is a strong signal) + content.
-    docs = []
+    bm_docs = []
     node_by_rel = {}
     for n in files:
         rel = n['rel']
         node_by_rel[rel] = n
         path_toks = tokenize(rel.replace('/', ' ')) * 3  # weight path 3x
         body_toks = tokenize(file_texts.get(rel, '')) if file_texts else []
-        docs.append((rel, path_toks + body_toks))
+        bm_docs.append((rel, path_toks + body_toks))
 
-    bm = BM25(docs)
+    # Fold in design docs so intent (not just code) is searchable.
+    doc_rels = set()
+    for rel, text in (docs or {}).items():
+        doc_rels.add(rel)
+        bm_docs.append((rel, tokenize(rel.replace('/', ' ')) * 3 + tokenize(text or '')))
+
+    bm = BM25(bm_docs)
     qweights = expand_query(concept)
     if not qweights:
         return "Give a concept to explain, e.g. --explain authentication"
@@ -145,17 +164,20 @@ def explain_concept(out_dir, concept, file_texts=None, limit=12):
                 "check the Security / Flows tabs in nodo.html.")
 
     matched_terms = ', '.join(sorted(qweights, key=lambda t: -qweights[t]))
-    out = [f"Files most related to '{concept}' "
-           f"(BM25 over {len(docs)} files; searched: {matched_terms}):", '']
+    out = [f"Files & docs most related to '{concept}' "
+           f"(BM25 over {len(bm_docs)} items; searched: {matched_terms}):", '']
     top = ranked[:limit]
     for rel, score in top:
-        n = node_by_rel[rel]
+        if rel in doc_rels:
+            out.append(f"  {rel}  [doc]")
+            continue
+        n = node_by_rel.get(rel, {})
         iss = issues_by_file.get(rel)
         iss_tag = f"  ({len(iss)} issue(s))" if iss else ''
         out.append(f"  {rel}  [{n.get('category','?')}]{iss_tag}")
 
     from collections import Counter
-    mods = Counter(node_by_rel[rel]['community'] for rel, _ in top)
+    mods = Counter(node_by_rel[rel]['community'] for rel, _ in top if rel in node_by_rel)
     comm_names = {c['id']: c['name'] for c in ctx.get('communities', [])}
     if mods:
         out.append('')
@@ -163,7 +185,7 @@ def explain_concept(out_dir, concept, file_texts=None, limit=12):
             f"{comm_names.get(m, 'module ' + str(m))} ({cnt})"
             for m, cnt in mods.most_common(3)))
     out.append('')
-    out.append("Tip: `--query <file>` for any of these to see its blast radius.")
+    out.append("Tip: `--query <symbol-or-file>` for any of these to see its blast radius / references.")
     return '\n'.join(out)
 
 
@@ -202,7 +224,7 @@ def query_file(out_dir, needle):
     out.append(f"FILE  {rel}")
     out.append(f"      category={hit.get('category','?')}  loc={hit.get('loc','?')}  "
                f"edges={len(dependents) + len(dependencies)}")
-    if hit.get('hub_rank') and hit['hub_rank'] <= 15:
+    if (len(dependents) + len(dependencies)) > 0 and hit.get('hub_rank') and hit['hub_rank'] <= 15:
         out.append(f"      hub rank #{hit['hub_rank']} (high blast radius)")
     out.append("")
     out.append(f"DEPENDENTS ({len(dependents)}) — these import it; changing its exports may break them:")
