@@ -52,13 +52,16 @@ def build_knowledge(doc_texts, max_concepts_per_doc=8, max_global_concepts=250):
         def score(t):
             return total[t]
     concepts = sorted(cands, key=lambda t: (-score(t), t))[:max_global_concepts]
-    cset = set(concepts)
 
-    # each doc → the concepts it actually contains, ranked by salience in the doc
+    # each doc → the concepts it contains, ranked by salience. Iterate the ordered
+    # `concepts` list (NOT a set) and break tf ties by the term itself, so the
+    # selection is fully deterministic (Python randomizes set iteration order per
+    # process via hash seeding — that was making topics drift between runs).
     doc_concepts = {}
     concept_docs = defaultdict(set)
     for rel, tf in docs.items():
-        present = sorted((c for c in cset if c in tf), key=lambda c: -tf[c])[:max_concepts_per_doc]
+        present = sorted((c for c in concepts if c in tf),
+                         key=lambda c: (-tf[c], c))[:max_concepts_per_doc]
         doc_concepts[rel] = present
         for c in present:
             concept_docs[c].add(rel)
@@ -90,16 +93,16 @@ def build_knowledge(doc_texts, max_concepts_per_doc=8, max_global_concepts=250):
         # name the topic by its concept shared across the most docs in the cluster
         name = None
         if grp['concepts']:
-            name = max(grp['concepts'], key=lambda c: len(concept_docs.get(c, ())))
+            name = max(grp['concepts'], key=lambda c: (len(concept_docs.get(c, ())), c))
         elif grp['docs']:
             name = grp['docs'][0].split('/')[-1]
         topics.append({
             'id': cid, 'name': name or 'topic',
-            'concepts': sorted(grp['concepts'], key=lambda c: -len(concept_docs.get(c, ())))[:10],
+            'concepts': sorted(grp['concepts'], key=lambda c: (-len(concept_docs.get(c, ())), c))[:10],
             'docs': sorted(grp['docs'])[:10],
             'size': len(grp['docs']) + len(grp['concepts']),
         })
-    topics.sort(key=lambda t: -t['size'])
+    topics.sort(key=lambda t: (-t['size'], t['name']))
 
     return {
         'concepts': concepts,

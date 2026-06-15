@@ -655,6 +655,31 @@ class TestAST(unittest.TestCase):
         self.assertNotIn("LOCAL", names)  # non-function const is not a "definition"
 
 
+# ── Determinism (hash-seed independence) ──────────────────────────────────────
+class TestDeterminism(unittest.TestCase):
+    def test_output_is_hash_seed_independent(self):
+        # The full graph + knowledge must be byte-identical regardless of Python's
+        # per-process hash seed (sets/dicts must never leak iteration order).
+        d = make_project({
+            "src/a.ts": "import {b} from './b';\nexport const a = () => b;\n",
+            "src/b.ts": "export const b = 1;\n",
+            "docs/x.md": "token session login jwt token session auth login token",
+            "docs/y.md": "session token jwt login verify session token auth jwt",
+            "docs/z.md": "charge stripe refund invoice charge stripe billing refund",
+        })
+
+        def run(seed):
+            env = dict(os.environ, PYTHONHASHSEED=str(seed))
+            subprocess.run([sys.executable, "-m", "nodo", d], cwd=str(REPO),
+                           capture_output=True, env=env)
+            c = json.loads((Path(d) / ".nodo" / "nodo-context.json").read_text())
+            return json.dumps([c["files"], c["edges"], c["issues"], c["knowledge"]],
+                              sort_keys=True)
+        a, b, c = run(0), run(1), run(13)
+        self.assertEqual(a, b)
+        self.assertEqual(b, c)
+
+
 # ── End-to-end CLI ────────────────────────────────────────────────────────────
 class TestEndToEnd(unittest.TestCase):
     def test_cli_writes_valid_artifacts(self):
