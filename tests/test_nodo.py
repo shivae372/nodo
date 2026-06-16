@@ -1263,6 +1263,20 @@ class TestRoadmapBatch(unittest.TestCase):
         pairs = {(s["from_file"], s["to_file"]) for s in sur}
         self.assertNotIn(("src/mod1/a.ts", "src/mod1/c.ts"), pairs)  # mundane same-module excluded
 
+    def test_sqli_no_false_positive_on_select_word(self):
+        # battle-test regression (OpenClaw): the word "select" (POSIX select(), UI
+        # "CTRL+A select all") must NOT trigger SQLi; a real SELECT…FROM built by
+        # concatenation must.
+        d = make_project({
+            "ui.c": "  // CTRL+A to select all\n  int r = select(fd + 1, &s, 0, 0, t);\n  return r;\n",
+            "db.js": 'export function q(n){ return run("SELECT * FROM users WHERE x=\'" + n + "\'"); }\n',
+        })
+        nodes, edges, texts = scanner.build_graph(d)
+        flagged = {i["file"] for i in detectors.detect_all(nodes, edges, texts)
+                   if "SQL injection" in i["type"]}
+        self.assertIn("db.js", flagged)        # real SQLi still caught
+        self.assertNotIn("ui.c", flagged)      # select()/"select all" not flagged
+
     def test_symbol_graph_is_language_agnostic(self):
         # battle-test regression: the symbol/call graph must work beyond JS/TS/Python
         # (OpenClaw, a 776-file C++ repo, produced 0 symbols before this was fixed).
