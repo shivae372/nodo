@@ -209,6 +209,11 @@ class _State:
                 + '\n'.join(f"  • {s['from']} -> {s['to']}  [{s['from_file']} <-> {s['to_file']}]"
                             f" — {s['reason']}" for s in sur[:12]))
 
+    def vibe(self):
+        self._ready()
+        from . import vibe as _vibe
+        return _vibe.vibe_check(_ask._ctx(self.out_dir))
+
     def what_if(self, target):
         self._ready()
         from collections import defaultdict
@@ -350,6 +355,9 @@ def tool_specs():
         {"name": "nodo_symbols", "description": "Symbol-graph summary — functions/classes/methods "
          "as nodes with defines/calls/inherits edges (full graph in .nodo/nodo-symbols.json).",
          "schema": opt()},
+        {"name": "nodo_vibe_summary", "description": "A concise architectural 'vibe check' "
+         "(deterministic): shape (god module / modular / layered), coupling, health, themes.",
+         "schema": opt()},
     ]
 
 
@@ -394,6 +402,8 @@ def dispatch(state, name, args):
             return state.what_if(a.get("target", ""))
         if name == "nodo_symbols":
             return state.symbols()
+        if name == "nodo_vibe_summary":
+            return state.vibe()
         return f"Unknown tool: {name}"
     except Exception as e:
         return f"nodo error handling {name}: {e}"

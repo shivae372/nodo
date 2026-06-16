@@ -924,10 +924,11 @@ class TestMCPServer(unittest.TestCase):
         self.assertIn("overview", serve.dispatch(st, "nodo_ask", {"question": "what does this do"}).lower())
         self.assertIsInstance(serve.dispatch(st, "nodo_overview", {}), str)
         self.assertIn("Unknown tool", serve.dispatch(st, "bogus", {}))
-        self.assertEqual(len(serve.tool_specs()), 18)
+        self.assertEqual(len(serve.tool_specs()), 19)
         names = {s["name"] for s in serve.tool_specs()}
         for nm in ("nodo_self_check", "nodo_teach", "nodo_fix_context", "nodo_changed",
-                   "nodo_calls", "nodo_surprises", "nodo_what_if", "nodo_symbols"):
+                   "nodo_calls", "nodo_surprises", "nodo_what_if", "nodo_symbols",
+                   "nodo_vibe_summary"):
             self.assertIn(nm, names)
         self.assertIsInstance(serve.dispatch(st, "nodo_changed", {}), str)
         fx = serve.dispatch(st, "nodo_fix_context", {"file": "src/main.ts"})
@@ -1261,6 +1262,22 @@ class TestRoadmapBatch(unittest.TestCase):
         self.assertEqual(sur[0]["kind"], "reference")                # cross-modal ranks highest
         pairs = {(s["from_file"], s["to_file"]) for s in sur}
         self.assertNotIn(("src/mod1/a.ts", "src/mod1/c.ts"), pairs)  # mundane same-module excluded
+
+    def test_vibe_check_narrative(self):
+        from nodo import vibe
+        ctx = {
+            'files': [{'rel': 'src/a.ts', 'kind': 'code', 'category': 'api', 'loc': 50},
+                      {'rel': 'src/b.ts', 'kind': 'code', 'category': 'lib', 'loc': 30}],
+            'edges': [{'source': 0, 'target': 1, 'kind': 'import'}],
+            'hubs': [{'file': 'src/b.ts', 'edges': 5}],
+            'stats': {'issues': {'error': 0, 'warn': 1}},
+            'issues': [], 'knowledge': {'topics': [{'name': 'auth'}]},
+        }
+        s = vibe.vibe_check(ctx)
+        self.assertIn('[nodo · vibe]', s)
+        self.assertIn('TypeScript', s)            # language inferred from extensions
+        self.assertIn('src/b.ts', s)              # load-bearing file surfaced
+        self.assertIn('auth', s)                  # theme from knowledge topics
 
     def test_symbol_graph_nodes_and_edges(self):
         from nodo import ast_index, symgraph

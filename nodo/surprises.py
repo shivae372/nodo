@@ -8,7 +8,38 @@ communities, touches a hub, and connects otherwise-distant nodes (low shared-
 neighbour overlap). nodo surfaces the edge + structural evidence; the AI assistant
 supplies the plain-English "why it matters." Pure stdlib — no embeddings, no LLM.
 """
-from collections import defaultdict
+from collections import defaultdict, deque
+
+
+def _betweenness(adj):
+    """Brandes betweenness centrality (unweighted, undirected), pure stdlib.
+    O(V·(V+E)); callers gate it by graph size so advanced mode stays snappy."""
+    bc = {v: 0.0 for v in adj}
+    for s in adj:
+        S, P = [], {w: [] for w in adj}
+        sigma = dict.fromkeys(adj, 0.0)
+        sigma[s] = 1.0
+        dist = dict.fromkeys(adj, -1)
+        dist[s] = 0
+        Q = deque([s])
+        while Q:
+            v = Q.popleft()
+            S.append(v)
+            for w in adj[v]:
+                if dist[w] < 0:
+                    dist[w] = dist[v] + 1
+                    Q.append(w)
+                if dist[w] == dist[v] + 1:
+                    sigma[w] += sigma[v]
+                    P[w].append(v)
+        delta = dict.fromkeys(adj, 0.0)
+        while S:
+            w = S.pop()
+            for v in P[w]:
+                delta[v] += (sigma[v] / sigma[w]) * (1.0 + delta[w]) if sigma[w] else 0.0
+            if w != s:
+                bc[w] += delta[w]
+    return bc
 
 
 def build_surprises(nodes, edges, communities=None, top=14):
@@ -25,6 +56,13 @@ def build_surprises(nodes, edges, communities=None, top=14):
             continue
         adj[s].add(t)
         adj[t].add(s)
+
+    # Principled bridge signal: betweenness centrality (gated by size so advanced
+    # mode stays fast). Edges touching high-betweenness nodes are true bridges.
+    bc, bc_max = {}, 0.0
+    if adj and len(adj) <= 1500:
+        bc = _betweenness(adj)
+        bc_max = max(bc.values(), default=0.0) or 1.0
 
     ranked, seen = [], set()
     for e in edges:
@@ -50,15 +88,19 @@ def build_surprises(nodes, edges, communities=None, top=14):
         union = len(na | nb) or 1
         dist = 1.0 - (len(na & nb) / union)      # low shared-neighbour overlap = distant
         deg = len(na) + len(nb)
+        btw = ((bc.get(s, 0.0) + bc.get(t, 0.0)) / (2.0 * bc_max)) if bc_max else 0.0
         score = ((3.0 if cross_modal else 0.0)
                  + (1.6 if cross_comm else 0.0)
                  + 1.2 * min(deg, 24) / 24.0
-                 + 1.0 * dist)
+                 + 1.0 * dist
+                 + 1.4 * btw)
         reason = []
         if cross_modal:
             reason.append(f"{ka}↔{kb} cross-modal link")
         if cross_comm:
             reason.append(f"bridges modules {ca}↔{cb}")
+        if btw >= 0.5:
+            reason.append("high-betweenness bridge (paths funnel through it)")
         if deg >= 16:
             reason.append(f"touches a hub (degree {deg})")
         if dist > 0.95 and not cross_modal:

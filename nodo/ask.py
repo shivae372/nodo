@@ -20,8 +20,10 @@ from .symbols import build_symbol_index
 
 _CONNECT = re.compile(r'\b(connect|connects|connected|reach|reaches|between|relate|related|'
                       r'link|linked|flow|flows|wire|wired|depend on)\b', re.I)
-_IMPACT = re.compile(r'\b(break|breaks|broke|impact|affect|affects|changing|blast|radius|'
-                     r'ripple|safe to change|consequence)\b', re.I)
+_IMPACT = re.compile(r'\b(break|breaks|broke|impact|affect|affects|changing|change|blast|radius|'
+                     r'ripple|safe to change|consequence|refactor|rework|what.?if|touch|rename|move)\b', re.I)
+_VIBE = re.compile(r"\b(vibe|architecture\s+style|architectural\s+(style|read|overview|vibe)|"
+                   r"what\s+kind\s+of\s+(architecture|app|codebase|project)|what.?s\s+the\s+architecture)\b", re.I)
 _ISSUE = re.compile(r'\b(issues?|bugs?|problems?|wrong|smells?|vulnerab|insecure|risks?|'
                     r'todo|fixme|fix|dead\s*code|lint|broken|security|audit|anything\s+bad)\b', re.I)
 _HUB = re.compile(r'\b(hubs?|central|core\s+files?|important\s+files?|main\s+files?|'
@@ -269,6 +271,11 @@ def answer(question, nodes, edges, file_texts, out_dir, docs=None):
         ignore = set(scanner.DEFAULT_IGNORE_DIRS) | {Path(out_dir).name}
         hc = health.self_check(str(root), nodes, edges, file_texts, _lz.load_lessons(out_dir), ignore)
         return _hdr('self-check') + '\n' + hc['report']
+
+    # 0.55) "what's the vibe / architecture style" → deterministic vibe check
+    if _VIBE.search(question):
+        from . import vibe as _vibe
+        return _hdr('vibe') + '\n' + _vibe.vibe_check(ctx)
 
     # 0.6) "surprising / hidden connections" → from the --deep analysis (context.json)
     if _SURPRISE.search(question):

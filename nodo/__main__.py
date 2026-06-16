@@ -61,6 +61,9 @@ def main(argv=None):
     parser.add_argument('--explain', metavar='CONCEPT', default=None,
                         help="Find the files most related to a concept (e.g. 'authentication', "
                              "'billing'). Lexical search over paths + content. For AI agents.")
+    parser.add_argument('--vibe', action='store_true',
+                        help="Print a concise architectural 'vibe check' (deterministic: shape, "
+                             "god module, coupling, health, themes) and exit. Fast; works in any mode.")
     parser.add_argument('--topics', action='store_true',
                         help="Print the knowledge-graph topics (communities of docs/PDFs) "
                              "and exit. Add --full to include PDFs.")
@@ -387,6 +390,19 @@ def main(argv=None):
             querylog.record(out_dir, 'ask', args.ask)
         except Exception:
             pass
+        return 0
+
+    if args.vibe:
+        if not (out_dir / 'nodo-context.json').exists():
+            if _run_scan(root, out_dir, project_name, cfg, args, quiet=True) is None:
+                return 1
+        import json as _json
+        try:
+            ctx = _json.loads((out_dir / 'nodo-context.json').read_text(encoding='utf-8', errors='ignore'))
+        except Exception:
+            ctx = {}
+        from . import vibe as _vibe
+        print(_vibe.vibe_check(ctx))
         return 0
 
     if args.topics:

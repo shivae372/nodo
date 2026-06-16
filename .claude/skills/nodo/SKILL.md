@@ -71,7 +71,10 @@ python /path/to/nodo/nodo.py . --what-if <file|fn>     # transitive importers/ca
 ```
 
 Both modes also write a **"Start here"** pointer (load-bearing file + first thing to
-look at) to `nodo-context.md` — read it first to orient fast.
+look at) to `nodo-context.md` — read it first to orient fast. And in any mode,
+`python /path/to/nodo/nodo.py . --vibe` prints a one-paragraph **architectural vibe
+check** (shape / god module / coupling / health / themes) — a great opening read
+before you dive in; expand any line with your own reasoning.
 
 ### Step 2 — Report
 
@@ -217,8 +220,8 @@ Nodo can also run as an MCP server so you can call it as **tools mid-session**
 (diff-aware blast radius of recent edits), `nodo_calls` (a function's call graph),
 `nodo_surprises` (cross-module / cross-modal bridge edges — see Advanced mode),
 `nodo_what_if` (impact simulation — transitive importers/callers of a file/fn),
-`nodo_symbols` (symbol-graph summary), plus `nodo_self_check` and `nodo_teach`
-(see Self-healing below). `nodo.py .
+`nodo_symbols` (symbol-graph summary), `nodo_vibe_summary` (architectural vibe
+check), plus `nodo_self_check` and `nodo_teach` (see Self-healing below). `nodo.py .
 --install` registers it in `.mcp.json`. Same rule applies: these are fast offline
 *evidence* — you read the result and tell the user the correct part.
 

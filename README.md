@@ -99,8 +99,16 @@ mode already gives you. Advanced mode also surfaces:
 - **suggested questions** the map is best at answering.
 
 All of it lands in `nodo-report.md` + `nodo-context.json`, deterministic and
-offline. (Community detection is pure-stdlib label propagation — no `igraph`/Leiden
-dependency — so "advanced" still needs nothing heavier than optional tree-sitter.)
+offline. Surprises are scored with **betweenness centrality** (pure-stdlib Brandes,
+size-gated) so true bridges rank highest. (Community detection is pure-stdlib label
+propagation — no `igraph`/Leiden dependency — so "advanced" still needs nothing
+heavier than optional tree-sitter.)
+
+**Both modes** also answer **`--vibe`** — a deterministic architectural read
+("*hub-and-spoke around `app.ts`, layered, loosely coupled, carrying some debt*"):
+shape, god module, coupling, health, and themes, in one paragraph grounded in the
+graph. It's fast and zero-dep, so vibe coders get it too (`--ask "what's the vibe?"`,
+or MCP `nodo_vibe_summary`).
 
 ---
 
@@ -205,7 +213,7 @@ python nodo.py . --mcp          # run the stdio server
 python nodo.py . --install      # also registers it in .mcp.json for Claude Code / Cursor
 ```
 
-It exposes eighteen tools — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
+It exposes nineteen tools (incl. `nodo_vibe_summary`) — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
 `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`, `nodo_topics`,
 `nodo_overview`, `nodo_refresh`, `nodo_fix_context` (the structured prompt for a
 file's issues), `nodo_changed` (diff-aware blast radius of recent edits),
@@ -548,6 +556,7 @@ nodo [PATH] [options]
   --path A B           show the import chain connecting two files
   --explain CONCEPT    find the files & design docs related to a concept (BM25)
   --topics             print knowledge-graph topics (doc/PDF communities), then exit
+  --vibe               print a deterministic architectural "vibe check", then exit
   --hook               install a Claude Code SessionStart hook, then exit
   --install            wire the map into Claude + Cursor + AGENTS.md (+ MCP), then exit
   --mcp                run as an MCP server (stdio) — agents call nodo's tools live
