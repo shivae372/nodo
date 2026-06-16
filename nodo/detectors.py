@@ -10,6 +10,15 @@ Every issue carries: severity, category, type, file, line, detail, snippet.
 import re
 from collections import defaultdict
 
+# SQL-injection detection (tightened after battle-testing on a C++ game engine,
+# where bare "select" matched the POSIX select() syscall + UI text "CTRL+A select
+# all"). Require a real SQL *statement* shape inside a string literal — SELECT…FROM,
+# INSERT INTO, UPDATE…SET, DELETE FROM — AND a concatenation/interpolation.
+_SQL_IN_STRING = re.compile(
+    r'(?i)[\'"\x60][^\'"\x60]*'
+    r'(?:select\b[^\'"\x60]*\bfrom\b|insert\s+into\b|update\b[^\'"\x60]*\bset\b|delete\s+from\b)')
+_SQL_CONCAT = re.compile(r'(\+\s*[\'"\w]|\$\{|%s\b|%\(|\.format\(|f[\'"])')
+
 
 SEVERITY_ORDER = {'error': 0, 'warn': 1, 'info': 2}
 
@@ -92,8 +101,7 @@ LINE_RULES = [
 
     ('warn', 'Security', 'Possible SQL injection',
      'A SQL statement built with string concatenation/interpolation. Use parameterized queries / prepared statements.',
-     lambda l: bool(re.search(r'(?i)\b(select|insert\s+into|update|delete\s+from)\b', l))
-               and bool(re.search(r'(\+\s*\w|\$\{|%s\b|%\(|\.format\(|f["\'])', l)), None),
+     lambda l: bool(_SQL_IN_STRING.search(l)) and bool(_SQL_CONCAT.search(l)), None),
 
     ('warn', 'Security', 'Unsafe deserialization',
      'pickle/marshal/yaml.load on untrusted input can execute arbitrary code. Use a safe loader (yaml.safe_load, json).',
