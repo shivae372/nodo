@@ -127,6 +127,76 @@ class _State:
             out += '\n\n' + label + '\n' + json.dumps(hc['teach_template'], indent=2)
         return out
 
+    def fix_context(self, file):
+        """Emit the structured <context> prompt for a file's issues — EVIDENCE for
+        the agent to act on. nodo gathers; Claude writes the fix (never nodo)."""
+        self._ready()
+        ctx = _ask._ctx(self.out_dir)
+        if not file:
+            return "Pass a file path."
+        issues = [i for i in ctx.get('issues', []) if i.get('file') == file]
+        if not issues:
+            cand = [i for i in ctx.get('issues', []) if i.get('file', '').endswith(file)]
+            if cand:
+                file = cand[0]['file']
+                issues = [i for i in ctx.get('issues', []) if i.get('file') == file]
+        if not issues:
+            return f"No issues recorded for {file}."
+        rel_to_id = {n['rel']: n['id'] for n in self.nodes}
+        id_to_rel = {n['id']: n['rel'] for n in self.nodes}
+        deps, fid = [], rel_to_id.get(file)
+        if fid is not None:
+            deps = sorted(id_to_rel[e['target']] for e in self.edges
+                          if e.get('source') == fid and e.get('kind', 'import') == 'import')
+        proj = ctx.get('project') or ctx.get('name') or self.root.name
+        out = [f'<context project="{proj}">', f'  <file path="{file}" />', '  <issues>']
+        for i in issues[:12]:
+            ln = f':L{i["line"]}' if i.get('line') else ''
+            out.append(f'    [{i.get("confidence", "?")}/{i["severity"]}] {i["type"]}{ln} — '
+                       f'{i.get("detail", "")}')
+        out.append('  </issues>')
+        if deps:
+            out.append('  <dependencies>' + ', '.join(d.split('/')[-1] for d in deps[:12])
+                       + '</dependencies>')
+        out.append('</context>')
+        out.append("<task>Fix these issues. Match the existing patterns and don't break "
+                   "unrelated code.</task>")
+        return '\n'.join(out)
+
+    def changed(self):
+        """Files changed since the last scan + their combined transitive blast
+        radius — 'what did my recent edits put at risk?'"""
+        self._ready()
+        ctx = _ask._ctx(self.out_dir)
+        diag = ctx.get('diagnostics', {})
+        changed = sorted(set(diag.get('changed', [])) | set(diag.get('added', [])))
+        if not changed:
+            return "No files changed since the last scan."
+        rel_to_id = {n['rel']: n['id'] for n in self.nodes}
+        id_to_rel = {n['id']: n['rel'] for n in self.nodes}
+        rev = {}
+        for e in self.edges:
+            if e.get('kind', 'import') == 'import':
+                rev.setdefault(e['target'], []).append(e['source'])
+        seen, stack = set(), [rel_to_id[r] for r in changed if r in rel_to_id]
+        while stack:
+            cur = stack.pop()
+            for dep in rev.get(cur, []):
+                if dep not in seen:
+                    seen.add(dep)
+                    stack.append(dep)
+        impacted = sorted(id_to_rel[i] for i in seen
+                          if id_to_rel.get(i) and id_to_rel[i] not in changed)
+        lines = [f"{len(changed)} file(s) changed since last scan: "
+                 + ', '.join(changed[:8]) + (f" (+{len(changed) - 8})" if len(changed) > 8 else '')]
+        if impacted:
+            lines.append(f"Blast radius: {len(impacted)} file(s) transitively import the "
+                         f"changed set: " + ', '.join(impacted[:10])
+                         + (f" (+{len(impacted) - 10})" if len(impacted) > 10 else ''))
+        else:
+            lines.append("Blast radius: nothing else imports the changed set.")
+        return '\n'.join(lines)
+
     def teach(self, lesson):
         from . import lessons as _lz
         if isinstance(lesson, str):
@@ -189,6 +259,12 @@ def tool_specs():
          "(suppress a confirmed false 'dead code' finding), or resolver_hints. nodo applies it "
          "immediately and on every future scan. Offline; no LLM call.",
          "schema": S(lesson={"type": "object", "description": "a lesson per the lessons.json schema"})},
+        {"name": "nodo_fix_context", "description": "Emit the structured <context> prompt for a "
+         "file's issues (evidence to act on — nodo gathers, you write the fix).",
+         "schema": S(file={"type": "string", "description": "path to a source file"})},
+        {"name": "nodo_changed", "description": "Files changed since the last scan and their "
+         "combined transitive blast radius — what your recent edits put at risk.",
+         "schema": opt()},
     ]
 
 
@@ -221,6 +297,10 @@ def dispatch(state, name, args):
             return state.self_check()
         if name == "nodo_teach":
             return state.teach(a.get("lesson", {}))
+        if name == "nodo_fix_context":
+            return state.fix_context(a.get("file", ""))
+        if name == "nodo_changed":
+            return state.changed()
         return f"Unknown tool: {name}"
     except Exception as e:
         return f"nodo error handling {name}: {e}"

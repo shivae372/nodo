@@ -172,10 +172,12 @@ Nodo can also run as an MCP server so you can call it as **tools mid-session**
 (not just read the context file at the start): `python /path/to/nodo/nodo.py --mcp .`
 (needs `pip install mcp`). It exposes `nodo_ask`, `nodo_blast_radius`,
 `nodo_who_uses`, `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`,
-`nodo_topics`, `nodo_overview`, `nodo_refresh`, plus `nodo_self_check` and
-`nodo_teach` (see Self-healing below). `nodo.py . --install` registers it in
-`.mcp.json`. Same rule applies: these are fast offline *evidence* — you read the
-result and tell the user the correct part.
+`nodo_topics`, `nodo_overview`, `nodo_refresh`, `nodo_fix_context` (the structured
+`<context>` prompt for a file's issues — evidence to act on), `nodo_changed`
+(diff-aware blast radius of recent edits), plus `nodo_self_check` and `nodo_teach`
+(see Self-healing below). `nodo.py . --install` registers it in `.mcp.json`. Same
+rule applies: these are fast offline *evidence* — you read the result and tell the
+user the correct part.
 
 ## Self-healing: teach nodo when it's blind (you are the tutor)
 
@@ -234,6 +236,13 @@ Example lesson (taught after looking at the project's `.zig` files):
 This is the durable version of the division of labour: nodo finds where it's
 blind; you supply the understanding; nodo remembers it forever. Don't fabricate
 patterns — read the files first, then teach what's actually there.
+
+Shortcuts: if `tree-sitter-language-pack` ships a grammar for the language, add
+`"grammar": "<name>"` to the language instead of regexes and nodo uses the real
+parse tree. `--teach <dir>` ingests every `*.json` lesson in a folder (curated
+starters live in `examples/lessons/`). A lesson may also carry `keep_alive` (stop
+flagging a confirmed-live file as dead) and `resolver_hints` (resolve an alias
+nodo missed).
 
 ## Notes
 

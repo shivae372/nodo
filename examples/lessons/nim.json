@@ -1,0 +1,18 @@
+{
+  "languages": {
+    "nim": {
+      "extensions": [".nim"],
+      "category": "lib",
+      "def_patterns": [
+        "(?m)^\\s*(?:proc|func|method|template|macro|iterator|converter)\\s+([A-Za-z_]\\w*)",
+        "(?m)^\\s*type\\s+([A-Za-z_]\\w*)"
+      ],
+      "import_patterns": [
+        "(?m)^\\s*import\\s+([A-Za-z_][\\w/]*)",
+        "(?m)^\\s*from\\s+([\\w/]+)\\s+import"
+      ],
+      "note": "Nim: proc/func/method/template/macro/iterator/converter and type definitions; import and from..import. Teach with: nodo . --teach examples/lessons/nim.json",
+      "taught_by": "community"
+    }
+  }
+}

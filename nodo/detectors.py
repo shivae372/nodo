@@ -370,8 +370,45 @@ def _suppress_kept_alive(issues, keep_alive):
     return out
 
 
+def _apply_suppress(issues, suppress):
+    """Drop findings matching user suppress rules (`.nodo.json` → suppress)."""
+    rules = []
+    for s in suppress:
+        if isinstance(s, str) and s.strip():
+            rules.append((s.lower(), None))
+        elif isinstance(s, dict):
+            t = (s.get('type') or '').lower() or None
+            p = (s.get('path') or s.get('file') or '') or None
+            if t or p:
+                rules.append((t, p))
+    if not rules:
+        return issues
+    out = []
+    for it in issues:
+        t, f = it['type'].lower(), it.get('file', '')
+        if any((rt is None or rt in t) and (rp is None or rp in f) for rt, rp in rules):
+            continue
+        out.append(it)
+    return out
+
+
+def _apply_severity_overrides(issues, overrides):
+    """Re-weight findings by type (`.nodo.json` → severity_overrides)."""
+    keys = sorted(overrides.keys())
+    for it in issues:
+        t = it['type']
+        if t in overrides:
+            it['severity'] = overrides[t]
+        else:
+            for k in keys:
+                if k and k.lower() in t.lower():
+                    it['severity'] = overrides[k]
+                    break
+    return issues
+
+
 def detect_all(nodes, edges, file_texts, custom_rules=None, include_reference=False,
-               keep_alive=None):
+               keep_alive=None, suppress=None, severity_overrides=None):
     from .scanner import all_import_target_basenames
     soft_refs = all_import_target_basenames(file_texts)
     issues = run_builtin_detectors(nodes, edges, file_texts,
@@ -395,7 +432,11 @@ def detect_all(nodes, edges, file_texts, custom_rules=None, include_reference=Fa
         print(f'[nodo] cross-file analysis skipped: {e}')
     if keep_alive:
         issues = _suppress_kept_alive(issues, keep_alive)
+    if suppress:
+        issues = _apply_suppress(issues, suppress)
     issues = _cap_per_type(issues)
+    if severity_overrides:
+        issues = _apply_severity_overrides(issues, severity_overrides)
     issues = _apply_confidence(issues)
     issues.sort(key=lambda x: (SEVERITY_ORDER.get(x['severity'], 9), x['category'], x['file']))
     for i, iss in enumerate(issues):

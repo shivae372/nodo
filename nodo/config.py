@@ -33,6 +33,14 @@ DEFAULTS = {
     'custom_rules': [],
     'project_name': None,    # falls back to the directory name
     'max_file_kb': 512,
+    # Drop findings you've decided are noise. Each entry is a string (matches the
+    # issue type) or {"type": "...", "path": "..."} (both substring; an entry with
+    # both must match both). Suppressed issues don't count toward the per-type cap.
+    'suppress': [],
+    # Re-weight built-in findings for your project, e.g. {"console.log left in
+    # code": "warn"}. Values: "error" | "warn" | "info". Exact type match first,
+    # else substring.
+    'severity_overrides': {},
 }
 
 

@@ -924,10 +924,15 @@ class TestMCPServer(unittest.TestCase):
         self.assertIn("overview", serve.dispatch(st, "nodo_ask", {"question": "what does this do"}).lower())
         self.assertIsInstance(serve.dispatch(st, "nodo_overview", {}), str)
         self.assertIn("Unknown tool", serve.dispatch(st, "bogus", {}))
-        self.assertEqual(len(serve.tool_specs()), 12)
+        self.assertEqual(len(serve.tool_specs()), 14)
         names = {s["name"] for s in serve.tool_specs()}
         self.assertIn("nodo_self_check", names)
         self.assertIn("nodo_teach", names)
+        self.assertIn("nodo_fix_context", names)
+        self.assertIn("nodo_changed", names)
+        self.assertIsInstance(serve.dispatch(st, "nodo_changed", {}), str)
+        fx = serve.dispatch(st, "nodo_fix_context", {"file": "src/main.ts"})
+        self.assertIn("<context", fx)        # emits the evidence prompt (main.ts has a console.log)
 
     def test_serve_without_mcp_is_graceful(self):
         from nodo import serve
@@ -1102,6 +1107,99 @@ class TestSelfHealing(unittest.TestCase):
         self.assertFalse(stats["induced"])
         spec = lesson["languages"]["dat"]
         self.assertTrue(any("<regex" in p for p in spec["def_patterns"]))
+
+
+# ── Roadmap batch: config power, detection cache, re-export drift, grammar,
+#    community lessons, parallel reads ──────────────────────────────────────────
+class TestRoadmapBatch(unittest.TestCase):
+    def setUp(self):
+        self._ast = scanner._USE_AST
+        scanner._USE_AST = False
+        scanner.disable_lessons()
+
+    def tearDown(self):
+        scanner._USE_AST = self._ast
+        scanner.disable_lessons()
+
+    def test_config_suppress_and_severity(self):
+        d = make_project({"src/a.js": "export function f(){ console.log(1); }\n// TODO: x\n"})
+        nodes, edges, texts = scanner.build_graph(d)
+        base = {t for t, _ in {(i["type"], i["severity"]) for i in
+                               detectors.detect_all(nodes, edges, texts)}}
+        self.assertTrue(any("TODO" in t for t in base))
+        out = detectors.detect_all(nodes, edges, texts, suppress=[{"type": "TODO"}],
+                                   severity_overrides={"console.log left in code": "warn"})
+        pairs = {(i["type"], i["severity"]) for i in out}
+        self.assertFalse(any("TODO" in t for t, _ in pairs))             # suppressed
+        self.assertTrue(any("console.log" in t and s == "warn" for t, s in pairs))  # re-weighted
+
+    def test_detection_cache_signature_and_roundtrip(self):
+        from nodo import cache
+        s1 = cache.detect_signature({"a": "h1", "b": "h2"}, "regex", {"x": 1})
+        s2 = cache.detect_signature({"b": "h2", "a": "h1"}, "regex", {"x": 1})
+        self.assertEqual(s1, s2)                                          # order-insensitive
+        self.assertNotEqual(s1, cache.detect_signature({"a": "h1", "b": "Z"}, "regex", {"x": 1}))
+        self.assertNotEqual(s1, cache.detect_signature({"a": "h1", "b": "h2"}, "tree-sitter", {"x": 1}))
+        out = Path(make_project({"a.py": "x=1\n"})) / ".nodo"
+        cache.save_detect(out, s1, [{"type": "X"}])
+        sig, issues = cache.load_detect(out)
+        self.assertEqual((sig, issues), (s1, [{"type": "X"}]))
+
+    def test_reexport_drift_flagged(self):
+        d = make_project({
+            "src/y.ts": "export function realThing(){ return 1; }\n",
+            "src/barrel.ts": 'export { ghost } from "./y";\n',
+            "src/index.ts": 'import { ghost } from "./barrel";\nexport const go=()=>ghost();\n',
+        })
+        nodes, edges, texts = scanner.build_graph(d)
+        types = {i["type"] for i in detectors.detect_all(nodes, edges, texts)}
+        self.assertTrue(any("not exported by source" in t.lower() for t in types))
+
+    def test_reexport_present_not_flagged(self):
+        d = make_project({
+            "src/y.ts": "export function ok(){ return 1; }\n",
+            "src/barrel.ts": 'export { ok } from "./y";\n',
+            "src/index.ts": 'import { ok } from "./barrel";\nexport const go=()=>ok();\n',
+        })
+        nodes, edges, texts = scanner.build_graph(d)
+        types = {i["type"] for i in detectors.detect_all(nodes, edges, texts)}
+        self.assertFalse(any("not exported by source" in t.lower() for t in types))
+
+    def test_parallel_reads_identical(self):
+        files = {}
+        for i in range(20):
+            files[f"src/m{i}.js"] = (f"import './m{i-1}';\nexport const f{i}=()=>{i};\n"
+                                     if i else "export const f0=()=>0;\n")
+        d = make_project(files)
+        n1, e1, t1 = scanner.build_graph(d, jobs=1)
+        n2, e2, t2 = scanner.build_graph(d, jobs=4)
+        self.assertEqual([x["rel"] for x in n1], [x["rel"] for x in n2])
+        self.assertEqual(sorted((e["source"], e["target"]) for e in e1),
+                         sorted((e["source"], e["target"]) for e in e2))
+        self.assertEqual(t1, t2)
+
+    def test_lesson_grammar_field_enables_ast(self):
+        from nodo import ast_index, lessons
+        if not ast_index.available():
+            self.skipTest("tree-sitter not installed")
+        d = make_project({"src/mod.pyx": "def compute(x):\n    return x+1\nclass Engine:\n    pass\n"})
+        out = Path(d) / ".nodo"
+        ok, errs, _ = lessons.merge_lessons(out, {"languages": {
+            "cython": {"extensions": [".pyx"], "grammar": "python"}}})
+        self.assertTrue(ok, errs)
+        scanner._USE_AST = True
+        scanner.enable_lessons(lessons.load_lessons(out))
+        nodes, edges, texts = scanner.build_graph(d)
+        self.assertIn("compute", symbols.query_symbol(nodes, texts, "compute") or "")
+
+    def test_community_lessons_are_valid(self):
+        from nodo import lessons
+        ldir = Path(__file__).resolve().parent.parent / "examples" / "lessons"
+        files = sorted(ldir.glob("*.json"))
+        self.assertTrue(files, "no community lessons shipped")
+        for f in files:
+            ok, errs, _ = lessons.validate_lesson(json.loads(f.read_text(encoding="utf-8")))
+            self.assertTrue(ok, f"{f.name}: {errs}")
 
 
 if __name__ == "__main__":

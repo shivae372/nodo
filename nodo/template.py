@@ -564,6 +564,8 @@ function setEdgeScale(v){const f=parseFloat(v);document.getElementById('ew-val')
 function setLabelSize(v){labelSize=parseInt(v);document.getElementById('lb-val').textContent=labelSize+'px';applyLabels();}
 function applyLabels(){dataset_n.update(nodesData.map(n=>({id:n.id,label:labelsOn?(n.label):undefined,font:{size:labelSize,color:'#111827',face:'Inter,sans-serif',strokeWidth:3,strokeColor:'#ffffff'}})));}
 function toggleLabels(){labelsOn=!labelsOn;document.getElementById('btn-lbl').textContent='Labels: '+(labelsOn?'On':'Off');document.getElementById('btn-lbl').classList.toggle('on',labelsOn);applyLabels();}
+function searchNodes(q){q=(q||'').trim().toLowerCase();const el=document.getElementById('search-count');if(!q){dataset_n.update(nodesData.map(n=>({id:n.id,opacity:1})));network.unselectAll();if(el)el.textContent='';return;}const ids=nodesData.filter(n=>(((n._sf||'')+' '+(n.label||'')).toLowerCase().indexOf(q)>=0)).map(n=>n.id);const hit=new Set(ids);dataset_n.update(nodesData.map(n=>({id:n.id,opacity:hit.has(n.id)?1:0.08})));network.selectNodes(ids);if(ids.length)network.fit({nodes:ids,animation:{duration:300}});if(el)el.textContent=ids.length+' match'+(ids.length===1?'':'es');}
+function exportPNG(){try{const cv=document.querySelector('#graph canvas');if(!cv)return;const a=document.createElement('a');a.download='nodo-graph.png';a.href=cv.toDataURL('image/png');document.body.appendChild(a);a.click();a.remove();}catch(e){}}
 function jumpToNode(label){const n=nodesData.find(x=>x._label===label);if(!n)return;switchTab('graph',document.querySelector('.tab[data-tab="graph"]'));setTimeout(()=>{resetAll();network.focus(n.id,{scale:2.0,animation:{duration:600}});network.selectNodes([n.id]);const conn=new Set([n.id,...network.getConnectedNodes(n.id)]);dataset_n.update(nodesData.map(x=>({id:x.id,opacity:conn.has(x.id)?1:0.08})));},200);}
 
 network.on('oncontext',p=>{p.event.preventDefault();ctxNid=p.nodes&&p.nodes.length?p.nodes[0]:null;const m=document.getElementById('ctx');m.style.left=p.event.clientX+'px';m.style.top=p.event.clientY+'px';m.style.display='block';});
@@ -653,6 +655,11 @@ _PAGE = r"""<!DOCTYPE html>
         <div class="btn-row">
           <span class="btn" onclick="copyProjectContext(this)" title="Copy project summary for an AI agent (key: c)">Copy AI Summary</span>
         </div>
+      </div>
+      <div class="sb-sec">
+        <div class="sb-lbl">Find</div>
+        <div class="sld-row"><input id="node-search" type="text" placeholder="search files…" oninput="searchNodes(this.value)" autocomplete="off" spellcheck="false" style="width:100%;box-sizing:border-box;padding:5px 8px;border:1px solid rgba(128,128,128,.4);border-radius:6px;background:transparent;color:inherit;font-size:12px;outline:none"></div>
+        <div class="sld-row" style="display:flex;align-items:center"><span id="search-count" style="font-size:11px;opacity:.7"></span><span class="btn" style="margin-left:auto" onclick="exportPNG()" title="Download the graph as a PNG image">Export PNG</span></div>
       </div>
       <div class="sb-sec">
         <div class="sb-lbl">Display</div>

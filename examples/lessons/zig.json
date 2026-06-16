@@ -1,0 +1,17 @@
+{
+  "languages": {
+    "zig": {
+      "extensions": [".zig"],
+      "category": "lib",
+      "def_patterns": [
+        "(?m)^\\s*(?:pub\\s+)?(?:export\\s+)?fn\\s+([A-Za-z_]\\w*)",
+        "(?m)^\\s*(?:pub\\s+)?const\\s+([A-Za-z_]\\w*)\\s*="
+      ],
+      "import_patterns": [
+        "@import\\(\\s*\"([^\"]+)\"\\s*\\)"
+      ],
+      "note": "Zig: fn / pub fn definitions, const bindings, and @import(\"...\") imports. Curated starter lesson — teach with: nodo . --teach examples/lessons/zig.json",
+      "taught_by": "community"
+    }
+  }
+}

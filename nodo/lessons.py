@@ -81,6 +81,8 @@ def _normalize(obj):
             }
             if isinstance(spec.get('category'), str):
                 ls['category'] = spec['category']
+            if isinstance(spec.get('grammar'), str) and spec['grammar'].strip():
+                ls['grammar'] = spec['grammar'].strip()
             if isinstance(spec.get('note'), str):
                 ls['note'] = spec['note']
             ls['taught_by'] = spec.get('taught_by', 'claude') if isinstance(spec.get('taught_by'), str) else 'claude'
@@ -108,8 +110,9 @@ def validate_lesson(obj):
     for name, spec in norm['languages'].items():
         if not spec['extensions']:
             errors.append(f"language '{name}': no extensions (need e.g. \".zig\")")
-        if not spec['def_patterns'] and not spec['import_patterns']:
-            errors.append(f"language '{name}': needs at least one def_pattern or import_pattern")
+        if not spec['def_patterns'] and not spec['import_patterns'] and not spec.get('grammar'):
+            errors.append(f"language '{name}': needs at least one def_pattern, "
+                          f"import_pattern, or a tree-sitter `grammar` name")
         for kind in ('def_patterns', 'import_patterns'):
             for p in spec[kind]:
                 if _compile(p) is None:
@@ -179,6 +182,17 @@ def taught_extensions(lessons):
     out = set()
     for spec in (lessons or {}).get('languages', {}).values():
         out |= set(spec.get('extensions', []))
+    return out
+
+
+def grammar_map(lessons):
+    """{'.ext': 'grammar'} for languages whose lesson names a tree-sitter grammar."""
+    out = {}
+    for spec in (lessons or {}).get('languages', {}).values():
+        g = spec.get('grammar')
+        if g:
+            for e in spec.get('extensions', []):
+                out[e] = g
     return out
 
 
