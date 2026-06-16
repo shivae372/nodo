@@ -80,6 +80,29 @@ def enable_ast():
     _USE_AST = True
 
 
+# Optional learned lessons (see lessons.py) — taught languages + corrections.
+# When set, taught extensions become first-class source files and their def/import
+# regexes augment extraction. nodo stays offline; Claude writes the lessons.
+_LESSONS = None
+
+
+def enable_lessons(lessons):
+    global _LESSONS
+    _LESSONS = lessons or None
+
+
+def disable_lessons():
+    global _LESSONS
+    _LESSONS = None
+
+
+def _effective_source_exts():
+    if _LESSONS:
+        from . import lessons as _l
+        return SOURCE_EXTS | _l.taught_extensions(_LESSONS)
+    return SOURCE_EXTS
+
+
 # How files get categorized for colouring/grouping. Order matters: first match wins.
 # Tuned to be useful across typical project layouts without assuming a framework.
 CATEGORY_RULES = [
@@ -158,8 +181,9 @@ def _walk(root, ignore_dirs, exts, max_file_kb, diagnostics=None):
 
 
 def discover_files(root, ignore_dirs, max_file_kb=512, diagnostics=None):
-    """Yield (abs_path, rel_path) for every source file under root."""
-    yield from _walk(root, ignore_dirs, SOURCE_EXTS, max_file_kb, diagnostics)
+    """Yield (abs_path, rel_path) for every source file under root.
+    Includes extensions taught via lessons so a learned language is first-class."""
+    yield from _walk(root, ignore_dirs, _effective_source_exts(), max_file_kb, diagnostics)
 
 
 def discover_docs(root, ignore_dirs, max_file_kb=1024):
@@ -210,14 +234,34 @@ GENERIC_IMPORT_RES = [
 ]
 
 
+def _dedup(seq):
+    seen, out = set(), []
+    for x in seq:
+        if x not in seen:
+            seen.add(x)
+            out.append(x)
+    return out
+
+
+def _lesson_imports(rel_path, text):
+    """Import targets from taught import_patterns (additive), or [] if untaught."""
+    if not _LESSONS:
+        return []
+    from . import lessons as _l
+    return _l.extract_imports(rel_path, text, _LESSONS) or []
+
+
 def extract_imports(rel_path, text):
-    """Return raw import target strings found in a file's text."""
+    """Return raw import target strings found in a file's text.
+    Lesson-taught import patterns are merged in (additive) so a learned language
+    contributes edges even when the built-in extractors don't know it."""
+    lesson_hits = _lesson_imports(rel_path, text)
     if _USE_AST:
         try:
             from . import ast_index
             ast_hits = ast_index.extract_imports_ast(rel_path, text)
             if ast_hits is not None:
-                return ast_hits
+                return _dedup(ast_hits + lesson_hits)
         except Exception:
             pass  # any AST failure → fall through to the regex path
     ext = os.path.splitext(rel_path)[1].lower()
@@ -230,7 +274,7 @@ def extract_imports(rel_path, text):
     out = []
     for rx in regexes:
         out.extend(rx.findall(text))
-    return out
+    return _dedup(out + lesson_hits)
 
 
 def all_import_target_basenames(file_texts):
@@ -427,11 +471,15 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
     nodes = []
     for rel in rel_paths:
         loc = file_texts[rel].count('\n') + 1 if file_texts[rel] else 0
+        cat = categorize(rel)
+        if cat == 'other' and _LESSONS:          # let a lesson name a taught language's category
+            from . import lessons as _l
+            cat = _l.category_for(rel, _LESSONS) or cat
         nodes.append({
             'id': id_of[rel],
             'label': rel.split('/')[-1],
             'rel': rel,
-            'category': categorize(rel),
+            'category': cat,
             'loc': loc,
             'tier': tier_of(rel, reference_segments),
             'kind': 'code',
@@ -443,6 +491,11 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
         src_id = id_of[rel]
         for target in raw_imports[rel]:
             resolved = resolve_import(rel, target, idx)
+            if not resolved and _LESSONS:        # a taught resolver_hint can fix a missed import
+                from . import lessons as _l
+                hint = _l.resolve_hint(target, _LESSONS)
+                if hint in id_of:
+                    resolved = hint
             if resolved and resolved != rel:
                 key = (src_id, id_of[resolved])
                 if key not in seen:

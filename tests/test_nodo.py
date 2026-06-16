@@ -924,7 +924,10 @@ class TestMCPServer(unittest.TestCase):
         self.assertIn("overview", serve.dispatch(st, "nodo_ask", {"question": "what does this do"}).lower())
         self.assertIsInstance(serve.dispatch(st, "nodo_overview", {}), str)
         self.assertIn("Unknown tool", serve.dispatch(st, "bogus", {}))
-        self.assertEqual(len(serve.tool_specs()), 10)
+        self.assertEqual(len(serve.tool_specs()), 12)
+        names = {s["name"] for s in serve.tool_specs()}
+        self.assertIn("nodo_self_check", names)
+        self.assertIn("nodo_teach", names)
 
     def test_serve_without_mcp_is_graceful(self):
         from nodo import serve
@@ -942,6 +945,125 @@ class TestMCPServer(unittest.TestCase):
         cfg = json.loads((Path(d) / ".mcp.json").read_text())
         self.assertIn("nodo", cfg["mcpServers"])
         self.assertIn("--mcp", cfg["mcpServers"]["nodo"]["args"])
+
+
+# ── Self-healing & self-learning (Claude tutors nodo; lessons persist) ────────
+class TestSelfHealing(unittest.TestCase):
+    def setUp(self):
+        self._ast = scanner._USE_AST
+        scanner._USE_AST = False
+        scanner.disable_lessons()
+
+    def tearDown(self):
+        scanner._USE_AST = self._ast
+        scanner.disable_lessons()
+
+    TOY = {
+        "src/main.toy": 'import "./util.toy"\nfn greet(n){ return hello(n) }\nfn main(){ greet("w") }\n',
+        "src/util.toy": 'fn hello(n){ return n }\n',
+    }
+    TOY_LESSON = {"languages": {"toy": {
+        "extensions": [".toy"],
+        "category": "lib",
+        "def_patterns": [r"\bfn\s+([A-Za-z_]\w*)"],
+        "import_patterns": [r'import\s+"([^"]+)"'],
+    }}}
+
+    def test_unknown_language_detected_and_blind(self):
+        from nodo import lessons, health
+        d = make_project(dict(self.TOY, **{"readme.md": "# hi\n"}))
+        nodes, edges, texts = scanner.build_graph(d)
+        self.assertEqual(len(nodes), 0)   # nodo is blind to .toy with no lesson
+        hc = health.self_check(d, nodes, edges, texts, lessons.empty(),
+                               set(scanner.DEFAULT_IGNORE_DIRS) | {".nodo"})
+        kinds = {g["kind"] for g in hc["gaps"]}
+        self.assertIn("unknown_language", kinds)
+        self.assertIn(".toy", {g.get("ext") for g in hc["gaps"]})
+        self.assertIsNotNone(hc["teach_template"])
+
+    def test_teach_makes_language_first_class(self):
+        from nodo import lessons
+        d = make_project(self.TOY)
+        out = Path(d) / ".nodo"
+        ok, errs, summ = lessons.merge_lessons(out, self.TOY_LESSON)
+        self.assertTrue(ok, errs)
+        self.assertEqual(summ["languages_added"], ["toy"])
+        scanner.enable_lessons(lessons.load_lessons(out))
+        nodes, edges, texts = scanner.build_graph(d)
+        self.assertEqual({n["rel"] for n in nodes}, {"src/main.toy", "src/util.toy"})
+        self.assertEqual(len(edges), 1)                     # import "./util.toy" resolved
+        self.assertIn("greet", symbols.query_symbol(nodes, texts, "greet"))  # symbol now visible
+
+    def test_self_check_clears_after_teaching(self):
+        from nodo import lessons, health
+        d = make_project(self.TOY)
+        out = Path(d) / ".nodo"
+        lessons.merge_lessons(out, self.TOY_LESSON)
+        scanner.enable_lessons(lessons.load_lessons(out))
+        nodes, edges, texts = scanner.build_graph(d)
+        hc = health.self_check(d, nodes, edges, texts, lessons.load_lessons(out),
+                               set(scanner.DEFAULT_IGNORE_DIRS) | {".nodo"})
+        self.assertFalse(any(g["kind"] == "unknown_language" for g in hc["gaps"]))
+
+    def test_lesson_round_trips_and_reteach_updates(self):
+        from nodo import lessons
+        d = make_project({"a.py": "x=1\n"})
+        out = Path(d) / ".nodo"
+        L = {"languages": {"zig": {"extensions": [".zig"], "def_patterns": [r"\bfn\s+(\w+)"]}},
+             "keep_alive": ["src/Foo.ts"], "resolver_hints": {"@app/x": "src/x.ts"}}
+        ok, _, _ = lessons.merge_lessons(out, L)
+        self.assertTrue(ok)
+        r = lessons.load_lessons(out)
+        self.assertIn(".zig", lessons.taught_extensions(r))
+        self.assertIn("src/Foo.ts", lessons.keep_alive_set(r))
+        self.assertEqual(lessons.resolve_hint("@app/x", r), "src/x.ts")
+        _, _, summ2 = lessons.merge_lessons(out, L)   # re-teach same → update, not add
+        self.assertEqual(summ2["languages_added"], [])
+
+    def test_malformed_lesson_rejected(self):
+        from nodo import lessons
+        ok, errs, _ = lessons.validate_lesson(
+            {"languages": {"bad": {"extensions": [".bad"], "def_patterns": ["("]}}})  # bad regex
+        self.assertFalse(ok)
+        self.assertTrue(errs)
+        ok2, _, _ = lessons.validate_lesson(
+            {"languages": {"bad": {"extensions": [], "def_patterns": [r"(\w+)"]}}})  # no ext
+        self.assertFalse(ok2)
+        ok3, _, _ = lessons.validate_lesson(
+            {"languages": {"ok": {"extensions": [".ok"], "def_patterns": [r"\bfn\s+(\w+)"]}}})
+        self.assertTrue(ok3)
+
+    def test_keep_alive_suppresses_false_dead_code(self):
+        body = "\n".join("export function f%d(){return %d;}" % (i, i) for i in range(6))
+        d = make_project({
+            "src/main.ts": "export const boot=()=>1;\n",
+            "src/features/Orphan.ts": body,  # 6 exports, nobody imports it
+        })
+        nodes, edges, texts = scanner.build_graph(d)
+        base = {i["type"] for i in detectors.detect_all(nodes, edges, texts)}
+        self.assertTrue(any("Disconnected feature" in t for t in base))
+        healed = {i["type"] for i in detectors.detect_all(
+            nodes, edges, texts, keep_alive={"src/features/Orphan.ts"})}
+        self.assertFalse(any("Disconnected feature" in t for t in healed))
+        # a non-dead-code finding in a kept-alive file is NOT hidden
+        d2 = make_project({
+            "src/main.ts": "export const boot=()=>1;\n",
+            "src/features/Orphan.ts": body + "\nexport function noisy(){ console.log('x'); }\n",
+        })
+        n2, e2, t2 = scanner.build_graph(d2)
+        kept = {i["type"] for i in detectors.detect_all(
+            n2, e2, t2, keep_alive={"src/features/Orphan.ts"})}
+        self.assertFalse(any("Disconnected feature" in t for t in kept))   # dead-code suppressed
+        self.assertTrue(any("console.log" in t for t in kept))             # real lint NOT hidden
+
+    def test_mcp_self_check_and_teach(self):
+        from nodo import serve
+        d = make_project(self.TOY)
+        st = serve._State(d)
+        self.assertIn(".toy", serve.dispatch(st, "nodo_self_check", {}))
+        res = serve.dispatch(st, "nodo_teach", {"lesson": self.TOY_LESSON})
+        self.assertIn("Taught", res)
+        self.assertIn("greet", serve.dispatch(st, "nodo_who_uses", {"symbol": "greet"}))
 
 
 if __name__ == "__main__":

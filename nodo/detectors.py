@@ -345,7 +345,33 @@ def _cap_per_type(issues, cap=25):
     return out
 
 
-def detect_all(nodes, edges, file_texts, custom_rules=None, include_reference=False):
+# Findings that mean "nothing references this" — the family a keep_alive lesson
+# can suppress once Claude has confirmed the code IS reached (dynamic/reflection).
+_DEAD_FAMILY = ('disconnected feature', 'exported symbols never imported',
+                'unused', 'orphan')
+
+
+def _suppress_kept_alive(issues, keep_alive):
+    """Drop dead/disconnected/orphan findings the user/Claude marked as live.
+    A path entry suppresses by file; a bare symbol suppresses by whole-word
+    mention in the finding's detail. Only the dead-code family is affected — a
+    real bug (SQLi, secret) in a kept-alive file is never hidden."""
+    ka = set(keep_alive)
+    syms = {k for k in ka if '/' not in k and '.' not in k}
+    out = []
+    for it in issues:
+        if any(fam in it['type'].lower() for fam in _DEAD_FAMILY):
+            if it.get('file') in ka:
+                continue
+            detail = it.get('detail', '')
+            if syms and any(re.search(r'\b' + re.escape(s) + r'\b', detail) for s in syms):
+                continue
+        out.append(it)
+    return out
+
+
+def detect_all(nodes, edges, file_texts, custom_rules=None, include_reference=False,
+               keep_alive=None):
     from .scanner import all_import_target_basenames
     soft_refs = all_import_target_basenames(file_texts)
     issues = run_builtin_detectors(nodes, edges, file_texts,
@@ -367,6 +393,8 @@ def detect_all(nodes, edges, file_texts, custom_rules=None, include_reference=Fa
     except Exception as e:
         # never let an analysis bug break the whole run
         print(f'[nodo] cross-file analysis skipped: {e}')
+    if keep_alive:
+        issues = _suppress_kept_alive(issues, keep_alive)
     issues = _cap_per_type(issues)
     issues = _apply_confidence(issues)
     issues.sort(key=lambda x: (SEVERITY_ORDER.get(x['severity'], 9), x['category'], x['file']))

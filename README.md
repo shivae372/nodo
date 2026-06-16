@@ -159,12 +159,13 @@ python nodo.py . --mcp          # run the stdio server
 python nodo.py . --install      # also registers it in .mcp.json for Claude Code / Cursor
 ```
 
-It exposes ten tools — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
+It exposes twelve tools — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
 `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`, `nodo_topics`,
-`nodo_overview`, `nodo_refresh` — all thin wrappers over the same engine the CLI
-uses (read-only, local, no network). If `mcp` isn't installed, nodo prints the
-install command and every other command keeps working — the zero-dependency core
-is never affected.
+`nodo_overview`, `nodo_refresh`, plus `nodo_self_check` and `nodo_teach` (the
+self-healing loop — see below) — all thin wrappers over the same engine the CLI
+uses (local, no network; only `nodo_teach` writes, and only to the local
+`.nodo/lessons.json`). If `mcp` isn't installed, nodo prints the install command
+and every other command keeps working — the zero-dependency core is never affected.
 
 ## It remembers (personalization)
 
@@ -176,6 +177,75 @@ nodo learns from how you use it, all **local** (nothing leaves your machine):
 - **The files you work with most** — `--query`/`--ask` are logged locally
   (`.nodo/queries.log`) and the files you touch most show up in `nodo-context.md`,
   so the map foregrounds *your* hot paths. Keep `.nodo/` out of git (it's local).
+
+## It heals (self-healing & self-learning)
+
+nodo knows where it's blind, and it lets Claude tutor it — so the more you use
+them together, the smarter nodo gets about *your* stack. The division of labour
+again: **nodo is the deterministic, offline scaffold; Claude is the intelligence.**
+nodo never calls an LLM — lessons are local data it applies on every scan.
+
+**1. nodo diagnoses itself** — `--self-check` (alias `--doctor`) reports exactly
+where it came up empty:
+
+```bash
+python nodo.py . --self-check
+```
+```
+[nodo · self-check]
+
+Languages nodo does NOT understand yet (no parser / no lesson):
+  • .zig  — 14 file(s)
+  → Teach it: write a lesson (extensions + def/import regex) and run
+    `nodo . --teach lesson.json`. A starter template is below.
+
+Local imports nodo could not resolve to a file:
+  • src/app.ts  (2: @generated/api, ~/legacy/shim)
+  → Add `resolver_hints` mapping the import string → real path …
+```
+
+It flags three blind-spot classes: **unknown languages** (a code extension it has
+no parser for), **silent extraction** (a file it parsed but pulled no symbols/imports
+from — a grammar gap), and **unresolved local imports** (relative paths that didn't
+resolve to an edge). Every normal scan prints a one-line nudge when gaps exist, and
+records them in `nodo-context.json → diagnostics.learning_gaps`.
+
+**2. Claude tutors it** — Claude reads a couple of the flagged files and writes a
+**lesson**: how that language declares definitions and imports (regex with one
+capture group each), or a correction. `--teach` validates and persists it:
+
+```jsonc
+// lesson.json  — taught by Claude after looking at the .zig files
+{
+  "languages": {
+    "zig": {
+      "extensions": [".zig"],
+      "def_patterns":    ["\\bfn\\s+([A-Za-z_]\\w*)", "\\bconst\\s+(\\w+)\\s*=\\s*struct"],
+      "import_patterns": ["@import\\(\"([^\"]+)\"\\)"]
+    }
+  },
+  "keep_alive":     ["src/plugins/registry.ts"],         // stop calling a dynamically-loaded file "dead"
+  "resolver_hints": { "@generated/api": "src/api/gen.ts" } // resolve an alias nodo couldn't
+}
+```
+```bash
+python nodo.py . --teach lesson.json     # validated, saved to .nodo/lessons.json
+```
+
+**3. nodo heals — permanently.** On the next scan the taught language is
+**first-class**: its files are real nodes, its imports become edges, and
+`--query <symbol>` works across it. A `keep_alive` correction suppresses a
+confirmed-false "dead code"/"disconnected" finding (without ever hiding a real bug
+like a hardcoded secret in the same file); a `resolver_hint` fixes a missed import.
+The lesson persists in `.nodo/lessons.json` and applies to every future scan — nodo
+**learned**. Bad lessons (invalid regex, missing extensions) are rejected, so the
+heal is always safe.
+
+Same loop works live over MCP — `nodo_self_check` then `nodo_teach` — so Claude
+can heal a blind spot the moment it hits one, mid-session.
+
+> Invalid regexes are rejected; lessons are plain local JSON you can read, edit,
+> and commit per-project (or keep out of git with the rest of `.nodo/`).
 
 ## Save your agent's tokens
 
@@ -312,11 +382,15 @@ diverge when one copy is fixed and the others aren't.
 
 ### Signal over noise: corpus tiering
 
-Vendored, reference, and example code (`reference/`, `vendor/`, `third_party/`,
-`examples/`, `fixtures/`, …) is **tiered out of issue counts by default**, so a
-third-party folder full of `console.log`s never buries findings in your own
-code. The files still appear in the graph — they're just not counted against
-you. Pass `--include-vendor` to analyse them too.
+Reference and example code (`reference/`, `third_party/`, `examples/`,
+`fixtures/`, `vendored/`, `benchmarks/`, …) is **tiered out of issue counts by
+default** — the files still appear in the graph, they're just not counted
+against you, so a third-party folder full of `console.log`s never buries
+findings in your own code. Pass `--include-vendor` to count them too.
+
+Heavy build / dependency directories (`node_modules/`, `vendor/`, `dist/`,
+`build/`, `.git/`, …) are **skipped entirely** — not scanned and not in the
+graph.
 
 ### Custom rules
 
@@ -354,9 +428,10 @@ C#, Ruby, PHP and others resolve at the file-dependency level.
 **Tree-sitter AST symbol extraction** (auto when tree-sitter is installed, or
 `--ast`) covers the mainstream set — Python, JS, TS, TSX, Go, Rust, Java, C, C++,
 C#, Kotlin, Swift, Scala, Dart, Ruby, PHP, Lua, Solidity, Bash — via a
-*grammar-agnostic definition matcher* over **47 installed grammars** (any grammar
-that follows tree-sitter's definition-node convention works automatically, no
-per-language code). This powers `--query <symbol>` across languages,
+*grammar-agnostic definition matcher* that works across **every grammar
+`tree-sitter-language-pack` ships (100+)** — any grammar that follows
+tree-sitter's definition-node convention works automatically, no per-language
+code. This powers `--query <symbol>` across languages,
 disconnected-feature/orphan detection, and (for JS/TS) the AST-accurate
 argument-count contract check.
 
@@ -377,6 +452,10 @@ nodo [PATH] [options]
   --name NAME          project name in the viewer (default: folder name)
   --open               open the HTML in your browser when done
   --init               write a sample .nodo.json and exit
+  --self-check         report what nodo doesn't understand (unknown languages,
+  (--doctor)           silent extraction, unresolved local imports), then exit
+  --teach LESSON.json  ingest a lesson (teach nodo a language or a correction);
+                       persists to .nodo/lessons.json and applies on every scan
   --ask "QUESTION"     natural-language: routes to blast-radius/path/symbol/issues/
                        hubs/concept/topics — one command for every query
   --query FILE|SYMBOL  blast radius for a file, or definition+references for a symbol
@@ -516,7 +595,8 @@ covered by the test suite.
 
 - **Incremental parse cache** (`.nodo/cache.json`): each file's imports are cached
   by mtime + size + parser mode, so a rescan only re-parses files that actually
-  changed. A cached run is **byte-identical** to a clean one; disable with
+  changed. A cached run produces an **identical map** (graph + issues) to a clean
+  one — only the cache-hit counters in `diagnostics` differ; disable with
   `--no-cache`.
 - **Bounded output**: no single detector emits more than 25 findings before
   collapsing to a summary line, so the report stays readable on large repos.

@@ -38,6 +38,10 @@ _DESCRIBE = re.compile(r'\b(describe|show|what.?s\s+in|whats\s+in|contents?\s+of
                        r'read|see|explain)\b', re.I)
 _IMG_TYPES = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'pdf', 'mp4', 'mov'}
 _TOPIC = re.compile(r'\b(topics?|architecture|structure|map\s+of|what.?s\s+in\s+(this|the))\b', re.I)
+_LEARN = re.compile(r"(struggl|don'?t understand|do(es)?\s+not\s+understand|can'?t\s+(parse|read|understand)|"
+                    r"cannot\s+(parse|read|understand)|blind\s*spot|self.?check|doctor|"
+                    r"what\s+(should|can)\s+i\s+teach|teach\s+(you|nodo)|"
+                    r"languages?\s+(do|does|you|nodo).{0,20}(know|understand|support|miss))", re.I)
 
 # common verbs/words that are ALSO function names — never treat these as a "symbol"
 # the user is asking about (e.g. "how do I ADD a route" must not match a func add())
@@ -254,6 +258,14 @@ def answer(question, nodes, edges, file_texts, out_dir, docs=None):
         hits = _resolve_assets(question, ctx)
         if hits:
             return _asset_answer(hits, out_dir)
+
+    # 0.5) "what do you struggle with / what should I teach you" → self-check report
+    if _LEARN.search(question):
+        from . import health, scanner, lessons as _lz
+        root = Path(out_dir).resolve().parent
+        ignore = set(scanner.DEFAULT_IGNORE_DIRS) | {Path(out_dir).name}
+        hc = health.self_check(str(root), nodes, edges, file_texts, _lz.load_lessons(out_dir), ignore)
+        return _hdr('self-check') + '\n' + hc['report']
 
     # 1) "what breaks if I change <file>" → blast radius + change impact
     if files and _IMPACT.search(question):

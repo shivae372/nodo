@@ -172,9 +172,64 @@ Nodo can also run as an MCP server so you can call it as **tools mid-session**
 (not just read the context file at the start): `python /path/to/nodo/nodo.py --mcp .`
 (needs `pip install mcp`). It exposes `nodo_ask`, `nodo_blast_radius`,
 `nodo_who_uses`, `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`,
-`nodo_topics`, `nodo_overview`, and `nodo_refresh`. `nodo.py . --install` registers
-it in `.mcp.json`. Same rule applies: these are fast offline *evidence* — you read
-the result and tell the user the correct part.
+`nodo_topics`, `nodo_overview`, `nodo_refresh`, plus `nodo_self_check` and
+`nodo_teach` (see Self-healing below). `nodo.py . --install` registers it in
+`.mcp.json`. Same rule applies: these are fast offline *evidence* — you read the
+result and tell the user the correct part.
+
+## Self-healing: teach nodo when it's blind (you are the tutor)
+
+Nodo is deterministic and offline, so it has hard edges: a language it has no
+grammar for, a file it parsed but pulled nothing from, an aliased import it
+couldn't resolve, or a dynamically-loaded file it wrongly calls "dead". **You
+(Claude) are the intelligence that heals those edges** — and the fix persists, so
+nodo gets smarter about this codebase every time.
+
+**When to teach (watch for these):**
+- A scan prints a `self-check:` nudge, or `--self-check` / `nodo_self_check`
+  reports gaps.
+- You notice nodo missed a language, a symbol, or an import you can see in the code.
+- You verify that a file nodo flagged as `Disconnected feature` / dead is actually
+  reached (dynamically, via reflection, a plugin registry, a framework entrypoint).
+
+**The loop:**
+1. **Diagnose** — run `python /path/to/nodo/nodo.py . --self-check` (or call
+   `nodo_self_check`). It prints unknown languages, silent files, and unresolved
+   local imports, with a ready-to-fill lesson template.
+2. **Tutor** — actually READ a couple of the flagged files, then write a lesson
+   (`lesson.json`). You're the brain here: derive the regexes from what the code
+   really looks like, one capture group each.
+   - `languages.<name>`: `extensions`, `def_patterns` (capture the symbol name),
+     `import_patterns` (capture the import target), optional `category`.
+   - `keep_alive`: a file path or symbol to stop flagging as dead (use only after
+     you've confirmed it IS reached — this never hides a real bug like a secret).
+   - `resolver_hints`: `{ "<import string>": "real/rel/path.ext" }` for an alias
+     nodo couldn't resolve.
+3. **Heal** — `python /path/to/nodo/nodo.py . --teach lesson.json` (or call
+   `nodo_teach` with the lesson object). It validates (bad regexes are rejected),
+   saves to `.nodo/lessons.json`, and applies on every future scan. Re-scan and the
+   language is first-class: real nodes, resolved import edges, working
+   `--query <symbol>`.
+
+Example lesson (taught after looking at the project's `.zig` files):
+
+```json
+{
+  "languages": {
+    "zig": {
+      "extensions": [".zig"],
+      "def_patterns": ["\\bfn\\s+([A-Za-z_]\\w*)", "\\bconst\\s+(\\w+)\\s*=\\s*struct"],
+      "import_patterns": ["@import\\(\"([^\"]+)\"\\)"]
+    }
+  },
+  "keep_alive": ["src/plugins/registry.ts"],
+  "resolver_hints": { "@generated/api": "src/api/gen.ts" }
+}
+```
+
+This is the durable version of the division of labour: nodo finds where it's
+blind; you supply the understanding; nodo remembers it forever. Don't fabricate
+patterns — read the files first, then teach what's actually there.
 
 ## Notes
 

@@ -42,6 +42,15 @@ def main(argv=None):
                         help='Open the generated HTML in your browser when done')
     parser.add_argument('--init', action='store_true',
                         help='Write a sample .nodo.json config file and exit')
+    parser.add_argument('--self-check', '--doctor', dest='self_check', action='store_true',
+                        help="Report what nodo does NOT understand — unknown languages, files it "
+                             "parsed but pulled nothing from, unresolved local imports — so you "
+                             "(Claude) know exactly what to teach it. Then exit.")
+    parser.add_argument('--teach', metavar='LESSON_JSON', default=None,
+                        help="Ingest a lesson (a JSON file: languages with def/import regex, "
+                             "keep_alive corrections, resolver_hints), persist it to "
+                             ".nodo/lessons.json, and exit. How Claude tutors nodo on a new "
+                             "language or a confirmed false positive — it sticks across scans.")
     parser.add_argument('--query', metavar='FILE', default=None,
                         help="Print one file's blast radius (dependents, dependencies, "
                              "issues) from the existing map and exit. Token-cheap; for AI agents.")
@@ -130,6 +139,45 @@ def main(argv=None):
     cfg = load_config(root)
     project_name = args.name or cfg.get('project_name') or root.name
     out_dir = Path(args.out) if args.out else (root / '.nodo')
+
+    # Self-learning: load any lessons Claude has taught and apply them to every
+    # path below (scan / query / ask / self-check). nodo stays offline — lessons
+    # are local data, never an LLM call.
+    from . import lessons as _lessons_mod
+    learned = _lessons_mod.load_lessons(out_dir)
+    if _lessons_mod.has_content(learned):
+        scanner.enable_lessons(learned)
+
+    if args.teach:
+        teach_path = Path(args.teach)
+        if not teach_path.exists():
+            print(f'error: lesson file not found: {teach_path}', file=sys.stderr)
+            return 2
+        import json as _json
+        try:
+            obj = _json.loads(teach_path.read_text(encoding='utf-8', errors='ignore'))
+        except Exception as e:
+            print(f'error: {teach_path} is not valid JSON: {e}', file=sys.stderr)
+            return 2
+        ok, errors, summary = _lessons_mod.merge_lessons(out_dir, obj)
+        if not ok:
+            print('Lesson rejected — fix these and re-teach:', file=sys.stderr)
+            for er in errors:
+                print(f'  - {er}', file=sys.stderr)
+            return 1
+        print(f'Taught nodo. Saved to {out_dir / _lessons_mod.LESSONS_NAME}')
+        if summary.get('languages_added'):
+            print(f"  + new language(s): {', '.join(summary['languages_added'])}")
+        if summary.get('languages_updated'):
+            print(f"  ~ updated language(s): {', '.join(summary['languages_updated'])}")
+        if summary.get('keep_alive_added'):
+            print(f"  + keep-alive: {', '.join(summary['keep_alive_added'])}")
+        if summary.get('resolver_hints_added'):
+            print(f"  + resolver hint(s): {', '.join(summary['resolver_hints_added'])}")
+        if summary.get('extensions_now_understood'):
+            print(f"  nodo now understands: {', '.join(summary['extensions_now_understood'])}")
+        print('  Re-scan (nodo .) and the lesson is applied — nodo healed.')
+        return 0
 
     if args.benchmark:
         return _run_benchmark(root, out_dir, cfg, args)
@@ -246,6 +294,21 @@ def main(argv=None):
             ds = ', '.join(d.split('/')[-1] for d in t['docs'][:4])
             print(f'  • {t["name"]}: {cs}' + (f'   [{ds}]' if ds else ''))
         print('\nAsk the Claude skill to answer questions semantically over these topics.')
+        return 0
+
+    if args.self_check:
+        ignore_dirs = _ignore_dirs(cfg, args, out_dir, root)
+        nodes, edges, file_texts = build_graph(
+            root, ignore_dirs=ignore_dirs, respect_gitignore=not args.no_gitignore,
+            max_file_kb=cfg.get('max_file_kb', 512))
+        from . import health
+        hc = health.self_check(str(root), nodes, edges, file_texts, scanner._LESSONS, ignore_dirs)
+        print(hc['report'])
+        if hc['teach_template']:
+            import json as _json
+            print('\nStarter lesson (fill the regexes, save as lesson.json, then '
+                  '`nodo . --teach lesson.json`):')
+            print(_json.dumps(hc['teach_template'], indent=2))
         return 0
 
     result = _run_scan(root, out_dir, project_name, cfg, args)
@@ -366,13 +429,41 @@ def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):
     communities = detect_communities(len(nodes), edges)
     comm_sum = community_summaries(communities, nodes)
 
+    keep_alive = None
+    if scanner._LESSONS:
+        from . import lessons as _lz
+        keep_alive = _lz.keep_alive_set(scanner._LESSONS) or None
     issues = detect_all(nodes, edges, file_texts, custom_rules=cfg.get('custom_rules'),
-                        include_reference=getattr(args, 'include_vendor', False))
+                        include_reference=getattr(args, 'include_vendor', False),
+                        keep_alive=keep_alive)
     n_e = sum(1 for i in issues if i['severity'] == 'error')
     n_w = sum(1 for i in issues if i['severity'] == 'warn')
     n_i = sum(1 for i in issues if i['severity'] == 'info')
     if not quiet:
         print(f'  {len(issues)} issues ({n_e} errors, {n_w} warnings, {n_i} info)')
+
+    # self-healing nudge: surface what nodo can't parse so Claude can teach it.
+    # Recorded in diagnostics (→ context.json) and summarized once on the console.
+    try:
+        if len(nodes) <= 4000:
+            from . import health
+            hc = health.self_check(str(root), nodes, edges, file_texts, scanner._LESSONS, ignore_dirs)
+            if hc['gaps']:
+                diag['learning_gaps'] = [{k: v for k, v in g.items() if k != 'detail'}
+                                         for g in hc['gaps']]
+                if not quiet:
+                    kinds = {}
+                    for g in hc['gaps']:
+                        kinds[g['kind']] = kinds.get(g['kind'], 0) + 1
+                    label = {'unknown_language': 'unknown language(s)',
+                             'silent_extraction': 'silent file(s)',
+                             'unresolved_local': 'unresolved-import file(s)'}
+                    bits = [f'{n} {label[k]}' for k, n in sorted(kinds.items()) if k in label]
+                    if bits:
+                        print(f"  self-check: {', '.join(bits)} — run "
+                              f"`nodo . --self-check` to see what to teach nodo")
+    except Exception:
+        pass
 
     # derived insights — auto-generated flows + sensitive surfaces + API ref
     flows = entry_flows(nodes, edges)

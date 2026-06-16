@@ -49,6 +49,14 @@ class _State:
                 scanner.enable_ast()
         except Exception:
             pass
+        # apply any lessons Claude has taught (learned languages / corrections)
+        try:
+            from . import lessons as _lz
+            L = _lz.load_lessons(self.out_dir)
+            if _lz.has_content(L):
+                scanner.enable_lessons(L)
+        except Exception:
+            pass
         cli._run_scan(self.root, self.out_dir, self.root.name, cfg, args, quiet=True)
         ignore = cli._ignore_dirs(cfg, args, self.out_dir, self.root)
         self.nodes, self.edges, self.file_texts = scanner.build_graph(
@@ -100,6 +108,47 @@ class _State:
         self._ready()
         return _ask._overview_answer(_ask._ctx(self.out_dir), self.nodes)
 
+    def self_check(self):
+        self._ready()
+        from . import health, lessons as _lz
+        from . import __main__ as cli
+        cfg = load_config(self.root)
+        args = argparse.Namespace(ignore=[], no_gitignore=False)
+        ignore = cli._ignore_dirs(cfg, args, self.out_dir, self.root)
+        hc = health.self_check(str(self.root), self.nodes, self.edges, self.file_texts,
+                               _lz.load_lessons(self.out_dir), ignore)
+        out = hc['report']
+        if hc['teach_template']:
+            import json
+            out += ('\n\nStarter lesson (fill the regexes, then call nodo_teach or '
+                    '`nodo . --teach`):\n' + json.dumps(hc['teach_template'], indent=2))
+        return out
+
+    def teach(self, lesson):
+        from . import lessons as _lz
+        if isinstance(lesson, str):
+            import json
+            try:
+                lesson = json.loads(lesson)
+            except Exception as e:
+                return f"Lesson must be a JSON object (parse error: {e})."
+        ok, errors, summary = _lz.merge_lessons(self.out_dir, lesson)
+        if not ok:
+            return "Lesson rejected:\n" + "\n".join(f"  - {e}" for e in errors)
+        self.refresh()   # apply immediately so subsequent tool calls reflect the lesson
+        bits = []
+        if summary.get('languages_added'):
+            bits.append("learned " + ", ".join(summary['languages_added']))
+        if summary.get('languages_updated'):
+            bits.append("updated " + ", ".join(summary['languages_updated']))
+        if summary.get('keep_alive_added'):
+            bits.append("keep-alive " + ", ".join(summary['keep_alive_added']))
+        if summary.get('resolver_hints_added'):
+            bits.append("resolver hints " + ", ".join(summary['resolver_hints_added']))
+        now = summary.get('extensions_now_understood') or []
+        tail = (f" nodo now understands: {', '.join(now)}." if now else "")
+        return "Taught nodo (" + "; ".join(bits) + ")." + tail + " Map refreshed — healed."
+
 
 def tool_specs():
     """MCP tool definitions (name, description, JSON input schema)."""
@@ -128,6 +177,15 @@ def tool_specs():
         {"name": "nodo_overview", "description": "A synthesized project overview (files, hubs, "
          "concepts, topics, issue counts).", "schema": opt()},
         {"name": "nodo_refresh", "description": "Rescan the project so answers reflect the latest code.", "schema": opt()},
+        {"name": "nodo_self_check", "description": "What nodo does NOT understand yet — unknown "
+         "languages, files it parsed but pulled nothing from, unresolved local imports — with a "
+         "ready-to-fill lesson template. Use this, then nodo_teach, to heal a blind spot.",
+         "schema": opt()},
+        {"name": "nodo_teach", "description": "Tutor nodo: persist a lesson so it sticks across "
+         "scans. Pass a lesson object — languages (extensions + def/import regex), keep_alive "
+         "(suppress a confirmed false 'dead code' finding), or resolver_hints. nodo applies it "
+         "immediately and on every future scan. Offline; no LLM call.",
+         "schema": S(lesson={"type": "object", "description": "a lesson per the lessons.json schema"})},
     ]
 
 
@@ -156,6 +214,10 @@ def dispatch(state, name, args):
         if name == "nodo_refresh":
             state.refresh()
             return "Rescanned the project; the map is fresh."
+        if name == "nodo_self_check":
+            return state.self_check()
+        if name == "nodo_teach":
+            return state.teach(a.get("lesson", {}))
         return f"Unknown tool: {name}"
     except Exception as e:
         return f"nodo error handling {name}: {e}"

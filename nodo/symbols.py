@@ -24,14 +24,36 @@ def _is_py(rel):
     return rel.lower().endswith('.py')
 
 
+def _merge_defs(*lists):
+    """Concatenate def lists, de-duping by (name, line), order-preserving."""
+    seen, out = set(), []
+    for lst in lists:
+        for pair in lst:
+            if pair not in seen:
+                seen.add(pair)
+                out.append(pair)
+    return out
+
+
+def _lesson_defs(rel, text):
+    """Definitions from taught def_patterns (additive), or [] if untaught."""
+    from . import scanner
+    if not getattr(scanner, '_LESSONS', None):
+        return []
+    from . import lessons as _l
+    return _l.extract_defs(rel, text, scanner._LESSONS) or []
+
+
 def _defs_in(rel, text):
     """Return [(name, line)] for definitions in one file (functions/classes/consts).
-    Uses tree-sitter when the parser is active (more accurate), else regex."""
+    Uses tree-sitter when the parser is active (more accurate), else regex. Taught
+    lesson patterns are merged in so a learned language has symbols too."""
     from . import scanner, ast_index
+    lesson_defs = _lesson_defs(rel, text)
     if getattr(scanner, '_USE_AST', False):
         ast_defs = ast_index.extract_defs_ast(rel, text)
         if ast_defs is not None:
-            return ast_defs
+            return _merge_defs(ast_defs, lesson_defs)
     defs = []
     if _is_js(rel):
         pats = [
@@ -46,11 +68,11 @@ def _defs_in(rel, text):
             r'^\s*class\s+(%s)' % _IDENT,
         ]
     else:
-        return defs
+        return _merge_defs(defs, lesson_defs)
     for pat in pats:
         for m in re.finditer(pat, text, re.M):
             defs.append((m.group(1), text[:m.start()].count('\n') + 1))
-    return defs
+    return _merge_defs(defs, lesson_defs)
 
 
 def build_symbol_index(nodes, file_texts):
