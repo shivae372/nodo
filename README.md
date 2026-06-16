@@ -92,6 +92,8 @@ Everything lands in `<project>/.nodo/`:
 - **AI Context** — one-click copies: project summary, full issue backlog, or a
   scoped prompt per issue.
 - **Hot Paths** (`h`) — highlight the architectural hubs and what they touch.
+- **Find & export** — a search box filters/zooms the graph to files matching a
+  name, and **Export PNG** saves the current canvas as an image.
 
 ![Nodo issues tab with code snippets and Copy AI Context](docs/screenshot-issues.png)
 
@@ -159,13 +161,15 @@ python nodo.py . --mcp          # run the stdio server
 python nodo.py . --install      # also registers it in .mcp.json for Claude Code / Cursor
 ```
 
-It exposes twelve tools — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
+It exposes fourteen tools — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
 `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`, `nodo_topics`,
-`nodo_overview`, `nodo_refresh`, plus `nodo_self_check` and `nodo_teach` (the
-self-healing loop — see below) — all thin wrappers over the same engine the CLI
-uses (local, no network; only `nodo_teach` writes, and only to the local
-`.nodo/lessons.json`). If `mcp` isn't installed, nodo prints the install command
-and every other command keeps working — the zero-dependency core is never affected.
+`nodo_overview`, `nodo_refresh`, `nodo_fix_context` (the structured prompt for a
+file's issues — evidence to act on), `nodo_changed` (diff-aware blast radius of
+your recent edits), plus `nodo_self_check` and `nodo_teach` (the self-healing loop
+— see below) — all thin wrappers over the same engine the CLI uses (local, no
+network; only `nodo_teach` writes, and only to the local `.nodo/lessons.json`). If
+`mcp` isn't installed, nodo prints the install command and every other command
+keeps working — the zero-dependency core is never affected.
 
 ## It remembers (personalization)
 
@@ -234,8 +238,15 @@ validates and persists it:
 }
 ```
 ```bash
-python nodo.py . --teach lesson.json     # validated, saved to .nodo/lessons.json
+python nodo.py . --teach lesson.json          # validated, saved to .nodo/lessons.json
+python nodo.py . --teach examples/lessons/    # a directory teaches every *.json in it
 ```
+
+If `tree-sitter-language-pack` already ships a grammar for the language, skip the
+regexes entirely — add `"grammar": "<name>"` to the language and nodo extracts via
+the real parse tree (e.g. `{"extensions": [".pyx"], "grammar": "python"}`). Curated
+starter lessons live in [`examples/lessons/`](examples/lessons/) (Zig, Nim, …) —
+all local, nothing is fetched over the network.
 
 **3. nodo heals — permanently.** On the next scan the taught language is
 **first-class**: its files are real nodes, its imports become edges, and
@@ -421,6 +432,23 @@ Add a `.nodo.json` at your project root (`python /path/to/nodo/nodo.py . --init`
 `pattern` is any Python regex. `include`/`exclude` filter by file path. Your
 rules show up in the viewer and artifacts alongside the built-ins.
 
+Two more knobs tune the built-ins to your project:
+
+```json
+{
+  "suppress": [
+    "TODO marker",                              // drop a finding type everywhere
+    { "type": "console.log", "path": "scripts/" } // …or only under a path
+  ],
+  "severity_overrides": { "console.log left in code": "warn" }
+}
+```
+
+`suppress` removes findings you've decided are noise (string = match the issue
+type; object = `type` and/or `path`, both substring). `severity_overrides`
+re-weights a finding type (`error` / `warn` / `info`) — exact type match first,
+else substring. Suppressed issues don't count toward the per-type cap.
+
 ---
 
 ## Languages
@@ -475,7 +503,8 @@ nodo [PATH] [options]
   --docs-only          index doc text but skip the multimodal asset pass
   --ast                require tree-sitter parsing (note + regex fallback if absent)
   --no-ast             force the regex extractor even if tree-sitter is installed
-  --no-cache           disable the incremental parse cache
+  --no-cache           disable the incremental parse + detection caches
+  --jobs N             threads for the file-read pass (default 1; output identical)
   --full               deepest scan: shortcut for --ast --multimodal
   --benchmark          compare regex vs tree-sitter (timing + edges), then exit
   --ignore DIR         extra directory to skip (repeatable)
@@ -599,10 +628,18 @@ covered by the test suite.
 ## Performance & caching
 
 - **Incremental parse cache** (`.nodo/cache.json`): each file's imports are cached
-  by mtime + size + parser mode, so a rescan only re-parses files that actually
+  by content hash + parser mode, so a rescan only re-parses files that actually
   changed. A cached run produces an **identical map** (graph + issues) to a clean
   one — only the cache-hit counters in `diagnostics` differ; disable with
   `--no-cache`.
+- **Incremental detection cache** (`.nodo/detect-cache.json`): the issue list is
+  reused when nothing that affects detection changed (every file's content hash +
+  parser + lessons + detection config), so a no-op rescan skips the cross-file
+  passes entirely. Byte-identical inputs → byte-identical issues, so reuse is
+  always correct.
+- **Parallel reads** (`--jobs N`): the file-read pass can run on N threads for
+  large trees. Output is byte-identical to a single-threaded run (all downstream
+  work is order-deterministic); default is 1.
 - **Bounded output**: no single detector emits more than 25 findings before
   collapsing to a summary line, so the report stays readable on large repos.
 - **Nothing fails silently**: oversized/unreadable files are reported in the scan

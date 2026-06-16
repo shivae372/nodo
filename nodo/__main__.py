@@ -88,7 +88,10 @@ def main(argv=None):
                         help='Force the zero-dependency regex extractor even if tree-sitter '
                              'is installed.')
     parser.add_argument('--no-cache', action='store_true',
-                        help='Disable the incremental parse cache (.nodo/cache.json).')
+                        help='Disable the incremental parse + detection caches (.nodo/*.json).')
+    parser.add_argument('--jobs', type=int, default=1, metavar='N',
+                        help='Threads for the file-read pass (default 1). Speeds up large '
+                             'repos; output is byte-identical to a single-threaded run.')
     parser.add_argument('--full', action='store_true',
                         help='Deepest scan: shortcut for --ast --multimodal.')
     parser.add_argument('--benchmark', action='store_true',
@@ -151,31 +154,48 @@ def main(argv=None):
     if args.teach:
         teach_path = Path(args.teach)
         if not teach_path.exists():
-            print(f'error: lesson file not found: {teach_path}', file=sys.stderr)
+            print(f'error: lesson path not found: {teach_path}', file=sys.stderr)
             return 2
         import json as _json
-        try:
-            obj = _json.loads(teach_path.read_text(encoding='utf-8', errors='ignore'))
-        except Exception as e:
-            print(f'error: {teach_path} is not valid JSON: {e}', file=sys.stderr)
-            return 2
-        ok, errors, summary = _lessons_mod.merge_lessons(out_dir, obj)
-        if not ok:
-            print('Lesson rejected — fix these and re-teach:', file=sys.stderr)
-            for er in errors:
-                print(f'  - {er}', file=sys.stderr)
+        # a directory teaches every *.json lesson in it (sorted) — community packs
+        if teach_path.is_dir():
+            lesson_files = sorted(teach_path.glob('*.json'))
+            if not lesson_files:
+                print(f'error: no *.json lessons in {teach_path}', file=sys.stderr)
+                return 2
+        else:
+            lesson_files = [teach_path]
+        agg = {'languages_added': set(), 'languages_updated': set(), 'keep_alive_added': set(),
+               'resolver_hints_added': set(), 'extensions_now_understood': set()}
+        any_ok = False
+        for lf in lesson_files:
+            try:
+                obj = _json.loads(lf.read_text(encoding='utf-8', errors='ignore'))
+            except Exception as e:
+                print(f'error: {lf.name} is not valid JSON: {e}', file=sys.stderr)
+                continue
+            ok, errors, summary = _lessons_mod.merge_lessons(out_dir, obj)
+            if not ok:
+                print(f'Lesson {lf.name} rejected:', file=sys.stderr)
+                for er in errors:
+                    print(f'  - {er}', file=sys.stderr)
+                continue
+            any_ok = True
+            for k in agg:
+                agg[k] |= set(summary.get(k, []))
+        if not any_ok:
             return 1
         print(f'Taught nodo. Saved to {out_dir / _lessons_mod.LESSONS_NAME}')
-        if summary.get('languages_added'):
-            print(f"  + new language(s): {', '.join(summary['languages_added'])}")
-        if summary.get('languages_updated'):
-            print(f"  ~ updated language(s): {', '.join(summary['languages_updated'])}")
-        if summary.get('keep_alive_added'):
-            print(f"  + keep-alive: {', '.join(summary['keep_alive_added'])}")
-        if summary.get('resolver_hints_added'):
-            print(f"  + resolver hint(s): {', '.join(summary['resolver_hints_added'])}")
-        if summary.get('extensions_now_understood'):
-            print(f"  nodo now understands: {', '.join(summary['extensions_now_understood'])}")
+        if agg['languages_added']:
+            print(f"  + new language(s): {', '.join(sorted(agg['languages_added']))}")
+        if agg['languages_updated']:
+            print(f"  ~ updated language(s): {', '.join(sorted(agg['languages_updated']))}")
+        if agg['keep_alive_added']:
+            print(f"  + keep-alive: {', '.join(sorted(agg['keep_alive_added']))}")
+        if agg['resolver_hints_added']:
+            print(f"  + resolver hint(s): {', '.join(sorted(agg['resolver_hints_added']))}")
+        if agg['extensions_now_understood']:
+            print(f"  nodo now understands: {', '.join(sorted(agg['extensions_now_understood']))}")
         print('  Re-scan (nodo .) and the lesson is applied — nodo healed.')
         return 0
 
@@ -396,6 +416,7 @@ def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):
         max_file_kb=cfg.get('max_file_kb', 512),
         cache=cache_data,
         diagnostics=diag,
+        jobs=getattr(args, 'jobs', 1),
     )
     # personalization: what changed since your last scan (uses the content-hash cache)
     if cache_data is not None and old_hashes:
@@ -437,9 +458,41 @@ def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):
     if scanner._LESSONS:
         from . import lessons as _lz
         keep_alive = _lz.keep_alive_set(scanner._LESSONS) or None
-    issues = detect_all(nodes, edges, file_texts, custom_rules=cfg.get('custom_rules'),
-                        include_reference=getattr(args, 'include_vendor', False),
-                        keep_alive=keep_alive)
+
+    # Incremental DETECTION cache: reuse the issue list when nothing that affects
+    # detection changed (file contents + parser + lessons + detection config). Safe
+    # because detectors are deterministic — identical inputs → identical issues.
+    parser_label = 'tree-sitter' if scanner._USE_AST else 'regex'
+    issues = None
+    detect_sig = None
+    if not args.no_cache:
+        if cache_data is not None:
+            file_hashes = {rel: cache_data.get(rel, {}).get('hash') for rel in file_texts}
+        else:
+            import hashlib as _hl
+            file_hashes = {rel: _hl.sha1(t.encode('utf-8', 'ignore')).hexdigest()
+                           for rel, t in file_texts.items()}
+        detect_cfg = {
+            'include_vendor': getattr(args, 'include_vendor', False),
+            'custom_rules': cfg.get('custom_rules'), 'suppress': cfg.get('suppress'),
+            'severity_overrides': cfg.get('severity_overrides'),
+            'keep_alive': sorted(keep_alive) if keep_alive else None,
+            'lessons': scanner._LESSONS,
+        }
+        detect_sig = _cache.detect_signature(file_hashes, parser_label, detect_cfg)
+        cached_sig, cached_issues = _cache.load_detect(out_dir)
+        if cached_sig == detect_sig and isinstance(cached_issues, list):
+            issues = cached_issues
+            if not quiet:
+                print('  detection: reused cached results (nothing relevant changed)')
+    if issues is None:
+        issues = detect_all(nodes, edges, file_texts, custom_rules=cfg.get('custom_rules'),
+                            include_reference=getattr(args, 'include_vendor', False),
+                            keep_alive=keep_alive,
+                            suppress=cfg.get('suppress'),
+                            severity_overrides=cfg.get('severity_overrides'))
+        if detect_sig is not None:
+            _cache.save_detect(out_dir, detect_sig, issues)
     n_e = sum(1 for i in issues if i['severity'] == 'error')
     n_w = sum(1 for i in issues if i['severity'] == 'warn')
     n_i = sum(1 for i in issues if i['severity'] == 'info')

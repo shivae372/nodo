@@ -38,6 +38,24 @@ _LANG_NAME = {
 _PY = {'.py'}
 _JS = {'.js', '.jsx', '.mjs', '.cjs', '.ts', '.tsx', '.mts', '.cts'}
 
+# Extension → grammar names taught via lessons (e.g. {'.zig': 'zig'}). Lets a
+# lesson light up real AST extraction for any of the language-pack's grammars
+# that nodo didn't map out of the box — no per-language code needed.
+_LESSON_LANG = {}
+
+
+def set_lesson_grammars(mapping):
+    """Register ext→grammar names from lessons; busts the affected parser cache."""
+    global _LESSON_LANG
+    _LESSON_LANG = {k: v for k, v in (mapping or {}).items() if isinstance(v, str) and v}
+    for e in list(_PARSERS):
+        if e in _LESSON_LANG:
+            _PARSERS.pop(e, None)
+
+
+def _grammar_name(ext):
+    return _LESSON_LANG.get(ext) or _LANG_NAME.get(ext)
+
 
 def available():
     """True if a tree-sitter parser backend is importable. Never raises."""
@@ -63,7 +81,7 @@ def _get_parser(ext):
     if ext in _PARSERS:
         return _PARSERS[ext]
     parser = None
-    name = _LANG_NAME.get(ext)
+    name = _grammar_name(ext)
     if name and available():
         try:
             parser = _GET_PARSER(name)
@@ -142,7 +160,7 @@ def extract_imports_ast(rel, text):
                                     out.append(txt(c).strip('\'"`'))
                                     break
         else:
-            lang = _LANG_NAME.get(ext)
+            lang = _grammar_name(ext)
             if lang in ('c', 'cpp'):
                 for n in _walk(tree.root_node):       # local #include "x.h" (system <...> skipped → resolves to files)
                     if n.type == 'preproc_include':

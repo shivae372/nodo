@@ -39,3 +39,54 @@ def save(out_dir, files):
                      encoding='utf-8')
     except Exception:
         pass
+
+
+# ── Incremental DETECTION cache ───────────────────────────────────────────────
+# Detection (cross-file passes, cycle DFS, duplication windows) re-runs every scan
+# even when the parse cache hits. This caches the *issue list* keyed by a signature
+# over (every file's content hash + parser mode + detection-affecting config), so a
+# rescan with no content/config change reuses it. Byte-identical inputs →
+# byte-identical issues (detectors are deterministic), so reuse is always correct.
+import hashlib  # noqa: E402
+
+DETECT_NAME = 'detect-cache.json'
+DETECT_VERSION = 1
+
+
+def detect_signature(file_hashes, parser, config_blob):
+    """Stable signature for a detection run. `file_hashes` is {rel: content-hash},
+    `config_blob` any JSON-able dict of detection-affecting settings."""
+    h = hashlib.sha1()
+    h.update(f'v{DETECT_VERSION}|{parser}|'.encode())
+    for rel in sorted(file_hashes):
+        h.update(rel.encode('utf-8', 'ignore'))
+        h.update(b'\0')
+        h.update(str(file_hashes[rel]).encode())
+        h.update(b'\n')
+    h.update(json.dumps(config_blob, sort_keys=True, default=str).encode('utf-8', 'ignore'))
+    return h.hexdigest()
+
+
+def load_detect(out_dir):
+    """Return (signature, issues) from the last detection run, or (None, None)."""
+    p = Path(out_dir) / DETECT_NAME
+    if not p.exists():
+        return None, None
+    try:
+        data = json.loads(p.read_text(encoding='utf-8', errors='ignore'))
+        if data.get('version') != DETECT_VERSION:
+            return None, None
+        return data.get('signature'), data.get('issues')
+    except Exception:
+        return None, None
+
+
+def save_detect(out_dir, signature, issues):
+    """Persist the detection result. Never raises."""
+    p = Path(out_dir) / DETECT_NAME
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({'version': DETECT_VERSION, 'signature': signature,
+                                 'issues': issues}), encoding='utf-8')
+    except Exception:
+        pass

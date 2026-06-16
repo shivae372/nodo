@@ -162,6 +162,23 @@ def _extract_named_imports(rel, text):
                 nm = raw.replace('type ', '').split(' as ')[0].strip()
                 if nm:
                     out.append((nm, source, line, is_type))
+        # re-export drift: `export { a, b as c } from './y'` re-exports a/b from y,
+        # so y MUST still export them — a removal breaks every downstream importer
+        # at build time. Treat the re-exported names as named imports of y (the
+        # `export *` barrel guard in broken_contracts still suppresses wildcards).
+        for m in re.finditer(
+                r'export\s+(type\s+)?\{(.*?)\}\s*from\s*[\'"]([^\'"]+)[\'"]',
+                text, re.DOTALL):
+            source = m.group(3)
+            if not (source.startswith('.') or source.startswith('@/') or source.startswith('~')):
+                continue
+            is_type_re = bool(m.group(1))
+            line = text[:m.start()].count('\n') + 1
+            for raw in m.group(2).split(','):
+                is_type = is_type_re or raw.strip().startswith('type ')
+                nm = raw.replace('type ', '').split(' as ')[0].strip()
+                if nm and nm != '*':
+                    out.append((nm, source, line, is_type))
     elif _is_py(rel):
         for i, ln in enumerate(text.split('\n')):
             m = re.match(r'from\s+([.\w]+)\s+import\s+(.+)', ln)

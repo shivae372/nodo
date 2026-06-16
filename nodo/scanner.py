@@ -89,11 +89,21 @@ _LESSONS = None
 def enable_lessons(lessons):
     global _LESSONS
     _LESSONS = lessons or None
+    try:                                  # let lesson `grammar` fields light up AST
+        from . import ast_index, lessons as _l
+        ast_index.set_lesson_grammars(_l.grammar_map(_LESSONS) if _LESSONS else {})
+    except Exception:
+        pass
 
 
 def disable_lessons():
     global _LESSONS
     _LESSONS = None
+    try:
+        from . import ast_index
+        ast_index.set_lesson_grammars({})
+    except Exception:
+        pass
 
 
 def _effective_source_exts():
@@ -412,7 +422,7 @@ def resolve_import(importer_rel, target, idx):
 
 
 def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
-                reference_segments=None, cache=None, diagnostics=None):
+                reference_segments=None, cache=None, diagnostics=None, jobs=1):
     """Scan `root` and return (nodes, edges, file_texts).
 
     nodes:      list of {id, label, rel, category, loc, tier, kind}
@@ -423,6 +433,9 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
                  place — unchanged files skip re-parsing (results are identical).
     diagnostics: optional dict; records skipped/oversized/read-error files and
                  cache hit/parse counts so nothing is dropped silently.
+    jobs:        thread count for the file-READ pass (I/O-bound). >1 speeds up large
+                 trees; output is byte-identical to jobs=1 (all downstream work
+                 iterates files in deterministic order). Default 1.
     """
     root = Path(root).resolve()
     ignore = set(DEFAULT_IGNORE_DIRS)
@@ -435,12 +448,31 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
     rel_paths = [rel for _, rel in files]
     idx = _build_resolution_index(rel_paths)
 
+    # Phase 1 — read contents (optionally parallel; reads are I/O-bound). Stored by
+    # rel; every step after this iterates `files` in order, so jobs never changes
+    # the output, only the wall-clock of the read.
+    def _read(item):
+        abs_path, rel = item
+        try:
+            return rel, Path(abs_path).read_text(encoding='utf-8', errors='ignore')
+        except Exception:
+            return rel, None
+    texts_by_rel = {}
+    if jobs and jobs > 1 and len(files) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+        with ThreadPoolExecutor(max_workers=jobs) as ex:
+            for rel, text in ex.map(_read, files):
+                texts_by_rel[rel] = text
+    else:
+        for item in files:
+            rel, text = _read(item)
+            texts_by_rel[rel] = text
+
     file_texts = {}
     raw_imports = {}
     for abs_path, rel in files:
-        try:
-            text = Path(abs_path).read_text(encoding='utf-8', errors='ignore')
-        except Exception:
+        text = texts_by_rel.get(rel)
+        if text is None:
             text = ''
             if diagnostics is not None:
                 diagnostics.setdefault('read_errors', []).append(rel)
