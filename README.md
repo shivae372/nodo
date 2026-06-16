@@ -83,8 +83,10 @@ mode already gives you. Advanced mode also surfaces:
 - a **symbol-level graph** (`.nodo/nodo-symbols.json`) — functions, classes and
   methods as first-class nodes with `defines` / `calls` / `inherits` / `contains`
   (class→method) edges, plus **rationale** (each symbol's docstring/leading
-  comment) — hierarchical (files → classes → methods) *and* flat. On `click`:
-  1,328 symbols, 442 containment, 59 inheritance edges,
+  comment) — hierarchical (files → classes → methods) *and* flat. Works across
+  **every installed tree-sitter grammar** (C/C++/Go/Rust/Java/… not just JS/TS/Py).
+  Battle-tested on OpenClaw (776-file C++): **6,937 symbols, 3,481 calls, 1,297
+  containment, 99 inheritance edges**,
 - a **function call graph** (`.nodo/nodo-callgraph.json`; trace any function with
   `--calls <fn>`, or ask *"what calls X / what does X call?"*),
 - **impact simulation** — `--what-if <file|fn>` shows the transitive importers /

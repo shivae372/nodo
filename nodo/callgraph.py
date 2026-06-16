@@ -23,9 +23,21 @@ def available():
     return getattr(scanner, '_USE_AST', False) and ast_index.available()
 
 
+# Call-node types across grammars (JS/TS/C/C++/Rust, Python, Java, C#, …). We keep
+# only BARE-identifier callees (foo(), not obj.foo()/new F()) so edges stay low-FP.
+_CALL_TYPES = {'call_expression', 'call', 'method_invocation',
+               'function_call_expression', 'invocation_expression'}
+
+
+def _eligible(ext):
+    from . import ast_index
+    return ast_index._get_parser(ext) is not None
+
+
 def _defs_and_calls(rel, text):
     """(defs, calls) for one file via tree-sitter: defs=[(name,start,end)],
-    calls=[(callee,line)]. Bare-identifier callees only (obj.f()/new F() excluded)."""
+    calls=[(callee,line)]. Grammar-agnostic (any installed grammar): definitions
+    via the shared def-type matcher + name resolver; bare-identifier calls only."""
     from . import ast_index
     ext = os.path.splitext(rel)[1].lower()
     parser = ast_index._get_parser(ext)
@@ -46,37 +58,26 @@ def _defs_and_calls(rel, text):
         except Exception:
             return None
 
-    is_py = ext == '.py'
     defs, calls = [], []
     for n in ast_index._walk(tree.root_node):
         t = n.type
-        if is_py:
-            if t == 'function_definition':
-                nm = field(n, 'name')
-                if nm:
-                    defs.append((txt(nm), n.start_point[0] + 1, n.end_point[0] + 1))
-            elif t == 'call':
-                fn = field(n, 'function')
-                if fn is not None and fn.type == 'identifier':
-                    calls.append((txt(fn), n.start_point[0] + 1))
-        else:
-            if t in ('function_declaration', 'generator_function_declaration', 'method_definition'):
-                nm = field(n, 'name')
-                if nm and nm.type in ('identifier', 'property_identifier'):
-                    defs.append((txt(nm), n.start_point[0] + 1, n.end_point[0] + 1))
-            elif t == 'variable_declarator':
-                nm, val = field(n, 'name'), field(n, 'value')
-                if (nm and nm.type == 'identifier' and val is not None
-                        and val.type in ('arrow_function', 'function_expression', 'function')):
-                    defs.append((txt(nm), n.start_point[0] + 1, n.end_point[0] + 1))
-            elif t == 'call_expression':
-                fn = field(n, 'function')
-                if fn is not None and fn.type == 'identifier':
-                    calls.append((txt(fn), n.start_point[0] + 1))
+        if ast_index._is_def_type(t):
+            nm = ast_index._name_of(n, txt, field)
+            if nm:
+                defs.append((nm, n.start_point[0] + 1, n.end_point[0] + 1))
+        elif t == 'variable_declarator':                 # JS: const f = () => …
+            nm, val = field(n, 'name'), field(n, 'value')
+            if (nm and nm.type == 'identifier' and val is not None
+                    and val.type in ('arrow_function', 'function_expression', 'function')):
+                defs.append((txt(nm), n.start_point[0] + 1, n.end_point[0] + 1))
+        elif t in _CALL_TYPES:
+            fn = field(n, 'function') or field(n, 'name')
+            if fn is not None and fn.type in ('identifier', 'simple_identifier'):
+                calls.append((txt(fn), n.start_point[0] + 1))
     return defs, calls
 
 
-def build_call_graph(nodes, file_texts, cap=4000):
+def build_call_graph(nodes, file_texts, cap=20000):
     """Return {'available', 'edges':[{from,to,file}], 'callers':{}, 'callees':{},
     'def_count'}. Empty (available=False) unless AST parsing is active."""
     empty = {'available': False, 'edges': [], 'callers': {}, 'callees': {}, 'def_count': 0}
@@ -85,7 +86,7 @@ def build_call_graph(nodes, file_texts, cap=4000):
     per_file, defined = {}, set()
     for n in nodes:
         rel = n['rel']
-        if os.path.splitext(rel)[1].lower() not in (_JSTS | {'.py'}):
+        if not _eligible(os.path.splitext(rel)[1].lower()):   # any grammar tree-sitter has
             continue
         text = file_texts.get(rel, '')
         if not text:

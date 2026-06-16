@@ -1263,6 +1263,21 @@ class TestRoadmapBatch(unittest.TestCase):
         pairs = {(s["from_file"], s["to_file"]) for s in sur}
         self.assertNotIn(("src/mod1/a.ts", "src/mod1/c.ts"), pairs)  # mundane same-module excluded
 
+    def test_symbol_graph_is_language_agnostic(self):
+        # battle-test regression: the symbol/call graph must work beyond JS/TS/Python
+        # (OpenClaw, a 776-file C++ repo, produced 0 symbols before this was fixed).
+        from nodo import ast_index, symgraph
+        if not ast_index.available():
+            self.skipTest("tree-sitter not installed")
+        scanner._USE_AST = True
+        texts = {"m.c": "struct Point { int x; };\n"
+                        "int add(int a, int b){ return a + b; }\n"
+                        "int main(){ return add(1, 2); }\n"}
+        sg = symgraph.build_symbol_graph([{"rel": "m.c"}], texts)
+        names = {n["label"] for n in sg["nodes"] if n["kind"] == "symbol"}
+        self.assertTrue({"add", "main", "Point"} <= names)     # C funcs + struct extracted
+        self.assertGreaterEqual(sg["counts"]["calls"], 1)      # main -> add resolved
+
     def test_vibe_check_narrative(self):
         from nodo import vibe
         ctx = {

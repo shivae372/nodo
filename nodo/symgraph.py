@@ -30,10 +30,46 @@ def _clean_doc(s):
     return first[:120]
 
 
+_CLASS_KW = ('class', 'struct', 'interface', 'trait', 'enum', 'record', 'union',
+             'protocol', 'namespace', 'object')
+_HERITAGE = {'class_heritage', 'base_class_clause', 'extends_clause', 'implements_clause',
+             'super_interfaces', 'superclass', 'extends_interfaces'}
+
+
+def _kind_of(t):
+    if any(k in t for k in _CLASS_KW):
+        return 'class'
+    if 'method' in t:
+        return 'method'
+    return 'func'
+
+
+def _bases(node, txt, field, ast_index):
+    """Base/parent type names for a class-ish node, best-effort across languages."""
+    out = []
+    sup = field(node, 'superclasses')          # Python argument_list
+    if sup is not None:
+        for c in sup.children:
+            if c.type in ('identifier', 'attribute'):
+                out.append(txt(c).split('.')[-1])
+    sc = field(node, 'superclass')             # Java / some grammars (a field)
+    if sc is not None:
+        for d in ast_index._walk(sc):
+            if d.type in ('type_identifier', 'identifier'):
+                out.append(txt(d).split('.')[-1])
+    for c in node.children:                    # JS class_heritage / C++ base_class_clause / …
+        if c.type in _HERITAGE:
+            for d in ast_index._walk(c):
+                if d.type in ('identifier', 'type_identifier', 'scoped_type_identifier',
+                              'simple_identifier'):
+                    out.append(txt(d).split('::')[-1].split('.')[-1])
+    return out
+
+
 def _symbols(rel, text):
-    """(symbols, inherits): symbols=[(name, kind, start, end, doc)] (kind func/
-    class/method; doc = leading docstring/comment rationale or ''); inherits=
-    [(class, base)] from extends/implements/superclasses."""
+    """(symbols, inherits): symbols=[(name, kind, start, end, doc)]; inherits=
+    [(class, base)]. Grammar-agnostic — works for any installed tree-sitter grammar
+    (C/C++/Go/Rust/Java/… not just JS/TS/Python) via the shared def-type matcher."""
     from . import ast_index
     ext = os.path.splitext(rel)[1].lower()
     parser = ast_index._get_parser(ext)
@@ -57,7 +93,6 @@ def _symbols(rel, text):
     is_py = ext == '.py'
 
     def doc_of(n):
-        # rationale: Python body docstring, or a JS leading comment/jsdoc
         if is_py:
             body = field(n, 'body')
             if body is not None:
@@ -68,62 +103,33 @@ def _symbols(rel, text):
                             return _clean_doc(txt(c.children[0]))
                         break
             return ''
-        prev = n.prev_named_sibling if hasattr(n, 'prev_named_sibling') else None
+        prev = getattr(n, 'prev_named_sibling', None)
         if prev is not None and prev.type == 'comment':
             return _clean_doc(txt(prev))
         return ''
 
-    def add(syms, name, kind, n):
-        syms.append((name, kind, n.start_point[0] + 1, n.end_point[0] + 1, doc_of(n)))
-
     syms, inh = [], []
     for n in ast_index._walk(tree.root_node):
         t = n.type
-        if is_py:
-            if t == 'function_definition':
-                nm = field(n, 'name')
-                if nm:
-                    add(syms, txt(nm), 'func', n)
-            elif t == 'class_definition':
-                nm = field(n, 'name')
-                if nm:
-                    cname = txt(nm)
-                    add(syms, cname, 'class', n)
-                    sup = field(n, 'superclasses')
-                    if sup:
-                        for c in sup.children:
-                            if c.type in ('identifier', 'attribute'):
-                                inh.append((cname, txt(c).split('.')[-1]))
-        else:
-            if t in ('function_declaration', 'generator_function_declaration'):
-                nm = field(n, 'name')
-                if nm and nm.type == 'identifier':
-                    add(syms, txt(nm), 'func', n)
-            elif t == 'method_definition':
-                nm = field(n, 'name')
-                if nm and nm.type in ('property_identifier', 'identifier'):
-                    add(syms, txt(nm), 'method', n)
-            elif t == 'class_declaration':
-                nm = field(n, 'name')
-                if nm:
-                    cname = txt(nm)
-                    add(syms, cname, 'class', n)
-                    for c in n.children:
-                        if c.type == 'class_heritage':
-                            for d in ast_index._walk(c):
-                                if d.type in ('identifier', 'type_identifier'):
-                                    base = txt(d)
-                                    if base != cname:
-                                        inh.append((cname, base))
-            elif t == 'variable_declarator':
-                nm, val = field(n, 'name'), field(n, 'value')
-                if (nm and nm.type == 'identifier' and val is not None
-                        and val.type in ('arrow_function', 'function_expression', 'function')):
-                    add(syms, txt(nm), 'func', n)
+        if ast_index._is_def_type(t):
+            nm = ast_index._name_of(n, txt, field)
+            if not nm:
+                continue
+            kind = _kind_of(t)
+            syms.append((nm, kind, n.start_point[0] + 1, n.end_point[0] + 1, doc_of(n)))
+            if kind == 'class':
+                for b in _bases(n, txt, field, ast_index):
+                    if b and b != nm:
+                        inh.append((nm, b))
+        elif t == 'variable_declarator':            # JS: const f = () => …
+            nm, val = field(n, 'name'), field(n, 'value')
+            if (nm and nm.type == 'identifier' and val is not None
+                    and val.type in ('arrow_function', 'function_expression', 'function')):
+                syms.append((txt(nm), 'func', n.start_point[0] + 1, n.end_point[0] + 1, doc_of(n)))
     return syms, inh
 
 
-def build_symbol_graph(nodes, file_texts, cap=8000):
+def build_symbol_graph(nodes, file_texts, cap=40000):
     """Return {available, nodes, edges, by_file, counts}. Empty unless AST is active."""
     if not available():
         return {'available': False, 'nodes': [], 'edges': [], 'by_file': {}, 'counts': {}}
@@ -132,9 +138,10 @@ def build_symbol_graph(nodes, file_texts, cap=8000):
 
     by_file, defined, classes = defaultdict(list), set(), set()
     inherits, contains = [], []
+    from . import callgraph as _cg
     for n in nodes:
         rel = n['rel']
-        if os.path.splitext(rel)[1].lower() not in (_JSTS | {'.py'}):
+        if not _cg._eligible(os.path.splitext(rel)[1].lower()):   # any tree-sitter grammar
             continue
         text = file_texts.get(rel, '')
         if not text:
@@ -157,7 +164,8 @@ def build_symbol_graph(nodes, file_texts, cap=8000):
                     break
         inherits.extend((cls, base) for cls, base in inh)
 
-    gnodes, gedges, sym_id = [], [], {}
+    gnodes, sym_id = [], {}
+    def_edges, contains_edges, calls_edges, inh_edges = [], [], [], []
     for rel in sorted(by_file):
         gnodes.append({'id': f'file:{rel}', 'label': rel.split('/')[-1], 'kind': 'file', 'rel': rel})
         for s in by_file[rel]:
@@ -168,20 +176,22 @@ def build_symbol_graph(nodes, file_texts, cap=8000):
             if s.get('doc'):
                 node['rationale'] = s['doc']
             gnodes.append(node)
-            gedges.append({'from': f'file:{rel}', 'to': sid, 'type': 'defines'})
+            def_edges.append({'from': f'file:{rel}', 'to': sid, 'type': 'defines'})
     for rel, cn, meth in contains:                       # class → method containment
-        gedges.append({'from': f'sym:{rel}:{cn}', 'to': f'sym:{rel}:{meth}', 'type': 'contains'})
+        contains_edges.append({'from': f'sym:{rel}:{cn}', 'to': f'sym:{rel}:{meth}', 'type': 'contains'})
     for e in cg.get('edges', []):
         a, b = sym_id.get(e['from']), sym_id.get(e['to'])
         if a and b and a != b:
-            gedges.append({'from': a, 'to': b, 'type': 'calls'})
+            calls_edges.append({'from': a, 'to': b, 'type': 'calls'})
     for cls, base in inherits:
         a, b = sym_id.get(cls), sym_id.get(base)
         if a and b and base in classes and a != b:
-            gedges.append({'from': a, 'to': b, 'type': 'inherits'})
+            inh_edges.append({'from': a, 'to': b, 'type': 'inherits'})
 
+    # Relationship edges (calls/inherits/contains) are the valuable, traversal-worthy
+    # ones — keep them ahead of the bulky `defines` edges so a cap never starves them.
     seen, ded = set(), []
-    for e in gedges:
+    for e in inh_edges + calls_edges + contains_edges + def_edges:
         k = (e['from'], e['to'], e['type'])
         if k in seen:
             continue
