@@ -924,13 +924,11 @@ class TestMCPServer(unittest.TestCase):
         self.assertIn("overview", serve.dispatch(st, "nodo_ask", {"question": "what does this do"}).lower())
         self.assertIsInstance(serve.dispatch(st, "nodo_overview", {}), str)
         self.assertIn("Unknown tool", serve.dispatch(st, "bogus", {}))
-        self.assertEqual(len(serve.tool_specs()), 15)
+        self.assertEqual(len(serve.tool_specs()), 16)
         names = {s["name"] for s in serve.tool_specs()}
-        self.assertIn("nodo_self_check", names)
-        self.assertIn("nodo_teach", names)
-        self.assertIn("nodo_fix_context", names)
-        self.assertIn("nodo_changed", names)
-        self.assertIn("nodo_calls", names)
+        for nm in ("nodo_self_check", "nodo_teach", "nodo_fix_context",
+                   "nodo_changed", "nodo_calls", "nodo_surprises"):
+            self.assertIn(nm, names)
         self.assertIsInstance(serve.dispatch(st, "nodo_changed", {}), str)
         fx = serve.dispatch(st, "nodo_fix_context", {"file": "src/main.ts"})
         self.assertIn("<context", fx)        # emits the evidence prompt (main.ts has a console.log)
@@ -1236,6 +1234,33 @@ class TestRoadmapBatch(unittest.TestCase):
         self.assertEqual(cg["callers"].get("helper"), ["main"])
         # a call to an UNDEFINED function makes no edge (resolved-only → low FP)
         self.assertFalse(any(t == "console" or t == "log" for _f, t in edges))
+
+    def test_edge_provenance_tags(self):
+        d = make_project({
+            "src/a.ts": "export const x = 1;\n",
+            "src/b.ts": "import { x } from './a';\nexport const y = x;\n",
+        })
+        nodes, edges, texts = scanner.build_graph(d)
+        self.assertTrue(edges)
+        provs = {e.get("prov") for e in edges}
+        self.assertTrue(provs <= {"extracted", "ambiguous", "inferred"}, provs)
+        self.assertIn("extracted", provs)            # exact relative import → EXTRACTED
+
+    def test_surprises_rank_bridges_and_skip_mundane(self):
+        from nodo import surprises
+        nodes = [{"id": 0, "label": "a.ts", "rel": "src/mod1/a.ts", "kind": "code"},
+                 {"id": 1, "label": "b.ts", "rel": "src/mod2/b.ts", "kind": "code"},
+                 {"id": 2, "label": "README.md", "rel": "docs/README.md", "kind": "doc"},
+                 {"id": 3, "label": "c.ts", "rel": "src/mod1/c.ts", "kind": "code"}]
+        edges = [{"source": 0, "target": 3, "kind": "import"},        # same module → mundane
+                 {"source": 0, "target": 1, "kind": "import"},        # cross-community
+                 {"source": 2, "target": 1, "kind": "reference"}]     # cross-modal doc→code
+        comm = {0: 0, 3: 0, 1: 1, 2: 2}
+        sur = surprises.build_surprises(nodes, edges, comm, top=10)
+        self.assertTrue(sur)
+        self.assertEqual(sur[0]["kind"], "reference")                # cross-modal ranks highest
+        pairs = {(s["from_file"], s["to_file"]) for s in sur}
+        self.assertNotIn(("src/mod1/a.ts", "src/mod1/c.ts"), pairs)  # mundane same-module excluded
 
     def test_community_lessons_are_valid(self):
         from nodo import lessons

@@ -197,6 +197,18 @@ class _State:
             lines.append("Blast radius: nothing else imports the changed set.")
         return '\n'.join(lines)
 
+    def surprises(self):
+        self._ready()
+        from . import clustering, graphmerge, surprises as _sp
+        comm = clustering.detect_communities(len(self.nodes), self.edges)
+        un, ue, uc = graphmerge.integrate(self.nodes, self.edges, comm, self.docs, [], str(self.root))
+        sur = _sp.build_surprises(un, ue, uc)
+        if not sur:
+            return "No surprising connections found (small or highly-modular graph)."
+        return ("Surprising connections (cross-module / cross-modal — ask why each matters):\n"
+                + '\n'.join(f"  • {s['from']} -> {s['to']}  [{s['from_file']} <-> {s['to_file']}]"
+                            f" — {s['reason']}" for s in sur[:12]))
+
     def calls(self, symbol):
         self._ready()
         from . import callgraph as _cg
@@ -275,6 +287,9 @@ def tool_specs():
         {"name": "nodo_calls", "description": "A function's call graph: who calls it and what "
          "it calls (function-level, deterministic from the parse tree).",
          "schema": S(symbol={"type": "string", "description": "function/method name"})},
+        {"name": "nodo_surprises", "description": "Surprising connections — ranked cross-module / "
+         "cross-modal (code↔docs↔assets) bridge edges that grep and similarity search miss. "
+         "nodo gives the edge + evidence; you explain why it matters.", "schema": opt()},
     ]
 
 
@@ -313,6 +328,8 @@ def dispatch(state, name, args):
             return state.changed()
         if name == "nodo_calls":
             return state.calls(a.get("symbol", ""))
+        if name == "nodo_surprises":
+            return state.surprises()
         return f"Unknown tool: {name}"
     except Exception as e:
         return f"nodo error handling {name}: {e}"

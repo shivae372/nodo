@@ -37,9 +37,14 @@ python /path/to/nodo/nodo.py . --deep
 ```
 Turns on **tree-sitter AST** (symbol-level, ~19 languages), **multimodal**
 (docs/PDFs/images → the knowledge graph: concepts, topic communities, god-nodes),
-and a **function-level call graph** (`.nodo/nodo-callgraph.json` — who calls whom).
-Use it for big-picture/architectural understanding, onboarding to an unfamiliar
-repo, or when the user wants depth comparable to a semantic-graph tool. Heavier;
+a **function-level call graph** (`.nodo/nodo-callgraph.json` — who calls whom), and
+**surprising connections** (ranked cross-module / cross-modal bridge edges written
+to `nodo-report.md` + `nodo-context.json → surprises`). When the user asks "what's
+surprising here?" read those and explain *why* each link matters — nodo finds the
+edge + evidence; you supply the rationale. Edges also carry **provenance**
+(`extracted` / `inferred` / `ambiguous`). Use advanced for big-picture/architectural
+understanding, onboarding, or when the user wants depth comparable to a semantic-
+graph tool. Heavier;
 best to install the extras first: `pip install tree-sitter tree-sitter-language-pack markitdown`.
 
 **Semantic vs syntactic — the division of labour.** Vibe mode is *syntactic*
@@ -202,10 +207,11 @@ Nodo can also run as an MCP server so you can call it as **tools mid-session**
 `nodo_who_uses`, `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`,
 `nodo_topics`, `nodo_overview`, `nodo_refresh`, `nodo_fix_context` (the structured
 `<context>` prompt for a file's issues — evidence to act on), `nodo_changed`
-(diff-aware blast radius of recent edits), plus `nodo_self_check` and `nodo_teach`
-(see Self-healing below). `nodo.py . --install` registers it in `.mcp.json`. Same
-rule applies: these are fast offline *evidence* — you read the result and tell the
-user the correct part.
+(diff-aware blast radius of recent edits), `nodo_calls` (a function's call graph),
+`nodo_surprises` (cross-module / cross-modal bridge edges — see Advanced mode),
+plus `nodo_self_check` and `nodo_teach` (see Self-healing below). `nodo.py .
+--install` registers it in `.mcp.json`. Same rule applies: these are fast offline
+*evidence* — you read the result and tell the user the correct part.
 
 ## Self-healing: teach nodo when it's blind (you are the tutor)
 
