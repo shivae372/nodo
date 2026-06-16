@@ -702,8 +702,11 @@ jobs:
 ```
 
 It runs the same engine as the CLI (pure Python standard library — no install
-step), so the comment is deterministic and the action never phones home. The
-repo dogfoods it on its own PRs via [`.github/workflows/nodo.yml`](.github/workflows/nodo.yml).
+step), so the comment is deterministic and the action never phones home. A
+copy-ready version of this workflow ships at
+[`examples/github-workflow.yml`](examples/github-workflow.yml) — drop it into
+`.github/workflows/nodo.yml`. (For `shivae372/nodo@v1` to resolve, tag a `v1`
+release; `@main` works in the meantime.)
 
 ---
 

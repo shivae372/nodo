@@ -1,0 +1,29 @@
+# Nodo PR-scan workflow — ready to use.
+#
+# Copy this file to `.github/workflows/nodo.yml` in your repo. (It lives here under
+# examples/ because an automated integration without GitHub's `workflows` permission
+# can't write to `.github/workflows/` directly — you, or a normal `git push`, can.)
+#
+# Once in place, every pull request gets a nodo code-map comment (blast radius +
+# issues), updated in place on each push.
+
+name: nodo
+on: pull_request
+permissions:
+  contents: read
+  pull-requests: write
+jobs:
+  map:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+      # In YOUR repo, replace `shivae372/nodo@v1` below. (Inside this repo you can
+      # use `./` to run the action from the working tree.)
+      - uses: shivae372/nodo@v1
+        with:
+          path: '.'
+          args: '--no-ast'
+          comment: 'true'
