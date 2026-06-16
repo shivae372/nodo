@@ -39,6 +39,8 @@ _DESCRIBE = re.compile(r'\b(describe|show|what.?s\s+in|whats\s+in|contents?\s+of
 _IMG_TYPES = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'svg', 'bmp', 'pdf', 'mp4', 'mov'}
 _TOPIC = re.compile(r'\b(topics?|architecture|structure|map\s+of|what.?s\s+in\s+(this|the))\b', re.I)
 _CALLS = re.compile(r"\b(calls?|caller|callers|call\s*graph|call\s*sites?|invoke[sd]?|invokes)\b", re.I)
+_SURPRISE = re.compile(r"(surprising|surprise|unexpected|hidden\s+(connection|link)|non.?obvious|"
+                       r"cross.?(module|modal)|bridge\s+edge)", re.I)
 _LEARN = re.compile(r"(struggl|don'?t understand|do(es)?\s+not\s+understand|can'?t\s+(parse|read|understand)|"
                     r"cannot\s+(parse|read|understand)|blind\s*spot|self.?check|doctor|"
                     r"what\s+(should|can)\s+i\s+teach|teach\s+(you|nodo)|"
@@ -267,6 +269,19 @@ def answer(question, nodes, edges, file_texts, out_dir, docs=None):
         ignore = set(scanner.DEFAULT_IGNORE_DIRS) | {Path(out_dir).name}
         hc = health.self_check(str(root), nodes, edges, file_texts, _lz.load_lessons(out_dir), ignore)
         return _hdr('self-check') + '\n' + hc['report']
+
+    # 0.6) "surprising / hidden connections" → from the --deep analysis (context.json)
+    if _SURPRISE.search(question):
+        sur = ctx.get('surprises') or []
+        if sur:
+            lines = ['Surprising connections — cross-module/cross-modal links '
+                     '(ask "why does A connect to B?" for the rationale):']
+            for s in sur[:12]:
+                lines.append(f"  • {s['from']} → {s['to']}  "
+                             f"[{s['from_file']} ↔ {s['to_file']}] — {s['reason']}")
+            return _hdr('surprises') + '\n' + '\n'.join(lines)
+        return (_hdr('surprises') + '\nNo surprising-connections analysis yet — run '
+                '`nodo . --deep` (advanced mode) first.')
 
     # 0.7) "who calls X / what does X call" → function call graph (advanced/AST)
     if _CALLS.search(question) and syms:

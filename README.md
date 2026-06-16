@@ -78,8 +78,21 @@ which functions call which (advanced mode). Nodo builds the semantic **scaffold
 deterministically** (no embeddings, no LLM, nothing leaves your machine) and lets
 **your AI assistant be the reasoning layer** on top. So you get semantic depth
 *grounded in real evidence* — never a hallucinated graph — plus everything vibe
-mode already gives you. Advanced mode writes an extra `.nodo/nodo-callgraph.json`
-and you can trace any function with `--calls <fn>`.
+mode already gives you. Advanced mode also surfaces:
+
+- a **function call graph** (`.nodo/nodo-callgraph.json`; trace any function with
+  `--calls <fn>`, or ask *"what calls X / what does X call?"*),
+- **surprising connections** — ranked cross-module / cross-modal *bridge* edges
+  (e.g. a design doc that links straight to a core class), the hidden links grep
+  and similarity search miss; nodo gives the edge + evidence, your assistant
+  explains *why* (`--ask "surprising connections"`),
+- **edge provenance** on every dependency (`extracted` = exact resolve, `ambiguous`
+  = suffix/basename fallback, `inferred` = doc-mention / resolver-hint),
+- **suggested questions** the map is best at answering.
+
+All of it lands in `nodo-report.md` + `nodo-context.json`, deterministic and
+offline. (Community detection is pure-stdlib label propagation — no `igraph`/Leiden
+dependency — so "advanced" still needs nothing heavier than optional tree-sitter.)
 
 ---
 
@@ -184,15 +197,16 @@ python nodo.py . --mcp          # run the stdio server
 python nodo.py . --install      # also registers it in .mcp.json for Claude Code / Cursor
 ```
 
-It exposes fourteen tools — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
+It exposes sixteen tools — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
 `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`, `nodo_topics`,
 `nodo_overview`, `nodo_refresh`, `nodo_fix_context` (the structured prompt for a
 file's issues — evidence to act on), `nodo_changed` (diff-aware blast radius of
-your recent edits), plus `nodo_self_check` and `nodo_teach` (the self-healing loop
-— see below) — all thin wrappers over the same engine the CLI uses (local, no
-network; only `nodo_teach` writes, and only to the local `.nodo/lessons.json`). If
-`mcp` isn't installed, nodo prints the install command and every other command
-keeps working — the zero-dependency core is never affected.
+your recent edits), `nodo_calls` (a function's call graph), `nodo_surprises`
+(cross-module / cross-modal bridge edges), plus `nodo_self_check` and `nodo_teach`
+(the self-healing loop — see below) — all thin wrappers over the same engine the
+CLI uses (local, no network; only `nodo_teach` writes, and only to the local
+`.nodo/lessons.json`). If `mcp` isn't installed, nodo prints the install command
+and every other command keeps working — the zero-dependency core is never affected.
 
 ## It remembers (personalization)
 

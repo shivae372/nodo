@@ -129,7 +129,7 @@ def integrate(code_nodes, code_edges, communities, docs, assets, root,
         if key in seen:
             return
         seen.add(key)
-        edges.append({'source': s, 'target': t, 'kind': 'reference'})
+        edges.append({'source': s, 'target': t, 'kind': 'reference', 'prov': 'inferred'})
 
     # ── doc → (code | asset) edges, from markdown links + filename mentions ──
     for rel, nid in doc_ids.items():

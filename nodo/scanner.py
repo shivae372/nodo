@@ -375,11 +375,18 @@ def _match_unique_suffix(cand, idx):
     return None
 
 
-def resolve_import(importer_rel, target, idx):
-    """Resolve one import string to a project-relative file path, or None if external."""
+def resolve_import(importer_rel, target, idx, want_why=False):
+    """Resolve one import string to a project-relative file path, or None if external.
+
+    With want_why=True, returns (rel, provenance) where provenance is
+    'extracted' (exact path/index match), 'ambiguous' (unique suffix/basename
+    fallback — resolved but not certain), or None. Default returns just rel
+    (back-compatible)."""
+    def _r(rel, why):
+        return (rel, why) if want_why else rel
     target = target.strip()
     if not target:
-        return None
+        return _r(None, None)
 
     cands = []
     if target.startswith('.'):
@@ -403,22 +410,22 @@ def resolve_import(importer_rel, target, idx):
             for prefix in ('src/', 'app/', 'lib/', 'packages/', 'source/'):
                 cands.append(prefix + c)
 
-    # 1) exact path match (highest confidence)
+    # 1) exact path match (highest confidence) → EXTRACTED
     for c in cands:
         hit = _match_exact(c, idx)
         if hit:
-            return hit
-    # 2) unique-suffix fallback — off-by-one relative depth, aliased/base roots
+            return _r(hit, 'extracted')
+    # 2) unique-suffix fallback — off-by-one relative depth, aliased/base roots → AMBIGUOUS
     for c in cands:
         hit = _match_unique_suffix(c, idx)
         if hit:
-            return hit
-    # 3) unique-basename fallback (only when globally unique → safe)
+            return _r(hit, 'ambiguous')
+    # 3) unique-basename fallback (only when globally unique → safe) → AMBIGUOUS
     base = re.sub(r'\.[^./]+$', '', target.replace('\\', '/').rstrip('/').split('/')[-1])
     bucket = idx['basename'].get(base)
     if bucket and len(bucket) == 1:
-        return bucket[0]
-    return None
+        return _r(bucket[0], 'ambiguous')
+    return _r(None, None)
 
 
 def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
@@ -522,16 +529,17 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
     for rel in rel_paths:
         src_id = id_of[rel]
         for target in raw_imports[rel]:
-            resolved = resolve_import(rel, target, idx)
+            resolved, why = resolve_import(rel, target, idx, want_why=True)
             if not resolved and _LESSONS:        # a taught resolver_hint can fix a missed import
                 from . import lessons as _l
                 hint = _l.resolve_hint(target, _LESSONS)
                 if hint in id_of:
-                    resolved = hint
+                    resolved, why = hint, 'inferred'
             if resolved and resolved != rel:
                 key = (src_id, id_of[resolved])
                 if key not in seen:
                     seen.add(key)
-                    edges.append({'source': src_id, 'target': id_of[resolved], 'kind': 'import'})
+                    edges.append({'source': src_id, 'target': id_of[resolved],
+                                  'kind': 'import', 'prov': why or 'extracted'})
 
     return nodes, edges, file_texts

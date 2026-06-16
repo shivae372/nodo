@@ -604,21 +604,43 @@ def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):
         knowledge=know,
     )
 
-    # Advanced mode (--deep): build the function-level call graph and persist it as
-    # an extra artifact for Claude to reason over. AST-only; never affects the
-    # vibe-coder default path.
+    # Advanced mode (--deep): the heavy semantic layer Claude reasons over — a
+    # function call graph + surprising cross-boundary connections + suggested
+    # questions. AST-only where relevant; never touches the vibe-coder default path.
     if getattr(args, 'deep', False):
-        from . import callgraph as _cg
+        import json as _json
+        from . import callgraph as _cg, surprises as _sp
         cg = _cg.build_call_graph(nodes, file_texts)
+        sur = _sp.build_surprises(u_nodes, u_edges, u_comm)
+        ctx_path = out_dir / 'nodo-context.json'
+        try:
+            ctx = _json.loads(ctx_path.read_text(encoding='utf-8', errors='ignore'))
+        except Exception:
+            ctx = {}
+        qs = _sp.suggested_questions(ctx.get('hubs', []), sur, know,
+                                     has_callgraph=cg.get('available'))
+        ctx['surprises'] = sur
+        ctx['suggested_questions'] = qs
         if cg.get('available'):
-            import json as _json
-            (out_dir / 'nodo-callgraph.json').write_text(
-                _json.dumps(cg, indent=2), encoding='utf-8')
-            if not quiet:
-                hubs = _cg.top_hubs(cg, 3)
-                tail = ('; most-called: ' + ', '.join(f'{n}() ×{d}' for n, d in hubs)) if hubs else ''
-                print(f'  call graph: {len(cg["edges"])} edges over {cg["def_count"]} '
-                      f'functions → nodo-callgraph.json{tail}')
+            (out_dir / 'nodo-callgraph.json').write_text(_json.dumps(cg, indent=2), encoding='utf-8')
+            ctx['callgraph'] = {'edge_count': len(cg['edges']), 'def_count': cg['def_count'],
+                                'most_called': [{'fn': n, 'callers': d} for n, d in _cg.top_hubs(cg, 8)]}
+        try:
+            ctx_path.write_text(_json.dumps(ctx, indent=2), encoding='utf-8')
+            rep = out_dir / 'nodo-report.md'
+            if rep.exists():
+                rep.write_text(rep.read_text(encoding='utf-8', errors='ignore')
+                               + '\n' + _sp.render_markdown(sur, qs), encoding='utf-8')
+        except Exception:
+            pass
+        if not quiet:
+            bits = []
+            if cg.get('available'):
+                h3 = _cg.top_hubs(cg, 3)
+                bits.append(f"{len(cg['edges'])} call edges/{cg['def_count']} fns"
+                            + ('; most-called ' + ', '.join(f'{n}()×{d}' for n, d in h3) if h3 else ''))
+            bits.append(f"{len(sur)} surprising connection(s)")
+            print('  advanced: ' + '; '.join(bits) + ' → nodo-callgraph.json + report + context.json')
 
     if not quiet:
         dt = time.time() - t0
