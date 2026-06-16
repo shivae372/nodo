@@ -924,10 +924,10 @@ class TestMCPServer(unittest.TestCase):
         self.assertIn("overview", serve.dispatch(st, "nodo_ask", {"question": "what does this do"}).lower())
         self.assertIsInstance(serve.dispatch(st, "nodo_overview", {}), str)
         self.assertIn("Unknown tool", serve.dispatch(st, "bogus", {}))
-        self.assertEqual(len(serve.tool_specs()), 16)
+        self.assertEqual(len(serve.tool_specs()), 18)
         names = {s["name"] for s in serve.tool_specs()}
-        for nm in ("nodo_self_check", "nodo_teach", "nodo_fix_context",
-                   "nodo_changed", "nodo_calls", "nodo_surprises"):
+        for nm in ("nodo_self_check", "nodo_teach", "nodo_fix_context", "nodo_changed",
+                   "nodo_calls", "nodo_surprises", "nodo_what_if", "nodo_symbols"):
             self.assertIn(nm, names)
         self.assertIsInstance(serve.dispatch(st, "nodo_changed", {}), str)
         fx = serve.dispatch(st, "nodo_fix_context", {"file": "src/main.ts"})
@@ -1261,6 +1261,30 @@ class TestRoadmapBatch(unittest.TestCase):
         self.assertEqual(sur[0]["kind"], "reference")                # cross-modal ranks highest
         pairs = {(s["from_file"], s["to_file"]) for s in sur}
         self.assertNotIn(("src/mod1/a.ts", "src/mod1/c.ts"), pairs)  # mundane same-module excluded
+
+    def test_symbol_graph_nodes_and_edges(self):
+        from nodo import ast_index, symgraph
+        if not ast_index.available():
+            self.skipTest("tree-sitter not installed")
+        scanner._USE_AST = True
+        texts = {
+            "base.ts": "export class Animal { speak(){ return 1; } }\n",
+            "dog.ts": ("import {Animal} from './base';\n"
+                       "export class Dog extends Animal { bark(){ return 2; } }\n"),
+            "main.ts": ("import {Dog} from './dog';\n"
+                        "export function main(){ return 1; }\n"
+                        "function helper(){ return main(); }\n"),
+        }
+        nodes = [{"rel": r} for r in texts]
+        sg = symgraph.build_symbol_graph(nodes, texts)
+        self.assertTrue(sg["available"])
+        symtypes = {n.get("symtype") for n in sg["nodes"] if n["kind"] == "symbol"}
+        self.assertTrue({"class", "func", "method"} <= symtypes)        # first-class symbol nodes
+        etypes = {e["type"] for e in sg["edges"]}
+        self.assertTrue({"defines", "calls", "inherits"} <= etypes)     # all three edge kinds
+        inh = {(e["from"].split(":")[-1], e["to"].split(":")[-1])
+               for e in sg["edges"] if e["type"] == "inherits"}
+        self.assertIn(("Dog", "Animal"), inh)
 
     def test_community_lessons_are_valid(self):
         from nodo import lessons

@@ -209,6 +209,60 @@ class _State:
                 + '\n'.join(f"  • {s['from']} -> {s['to']}  [{s['from_file']} <-> {s['to_file']}]"
                             f" — {s['reason']}" for s in sur[:12]))
 
+    def what_if(self, target):
+        self._ready()
+        from collections import defaultdict
+        rels = [n['rel'] for n in self.nodes]
+        fmatch = ([r for r in rels if r == target] or [r for r in rels if r.endswith('/' + target)]
+                  or [r for r in rels if r.endswith(target)])
+        if fmatch:
+            f = fmatch[0]
+            id_of = {n['rel']: n['id'] for n in self.nodes}
+            id2 = {n['id']: n['rel'] for n in self.nodes}
+            rev = defaultdict(list)
+            for e in self.edges:
+                if e.get('kind', 'import') == 'import':
+                    rev[e['target']].append(e['source'])
+            seen, stack = set(), [id_of[f]]
+            while stack:
+                c = stack.pop()
+                for d in rev.get(c, []):
+                    if d not in seen:
+                        seen.add(d)
+                        stack.append(d)
+            imp = sorted(id2[i] for i in seen)
+            return (f"Changing {f}: {len(imp)} file(s) transitively import it"
+                    + ((' — ' + ', '.join(imp[:20])) if imp else ' (leaf / entry point)'))
+        from . import callgraph as _cg
+        cg = _cg.build_call_graph(self.nodes, self.file_texts)
+        if not cg.get('available'):
+            return "Function impact needs tree-sitter; pass a file path instead."
+        callers = cg.get('callers', {})
+        if target not in callers and target not in cg.get('callees', {}):
+            return f"'{target}' isn't a known file or function."
+        seen, stack = set(), [target]
+        while stack:
+            c = stack.pop()
+            for u in callers.get(c, []):
+                if u not in seen:
+                    seen.add(u)
+                    stack.append(u)
+        return (f"Changing {target}(): {len(seen)} function(s) transitively call it"
+                + ((' — ' + ', '.join(s + '()' for s in sorted(seen)[:20])) if seen
+                   else ' (entry point or reached dynamically)'))
+
+    def symbols(self):
+        self._ready()
+        from . import symgraph as _sg
+        sg = _sg.build_symbol_graph(self.nodes, self.file_texts)
+        if not sg.get('available'):
+            return "Symbol graph needs tree-sitter (it's on by default when installed)."
+        c = sg['counts']
+        return (f"Symbol graph: {c['symbols']} symbols ({c['classes']} classes) / {c['calls']} call "
+                f"edge(s) / {c['inherits']} inheritance edge(s) across {c['files']} files. "
+                f"Full graph (functions/classes/methods + defines/calls/inherits) in "
+                f".nodo/nodo-symbols.json.")
+
     def calls(self, symbol):
         self._ready()
         from . import callgraph as _cg
@@ -290,6 +344,12 @@ def tool_specs():
         {"name": "nodo_surprises", "description": "Surprising connections — ranked cross-module / "
          "cross-modal (code↔docs↔assets) bridge edges that grep and similarity search miss. "
          "nodo gives the edge + evidence; you explain why it matters.", "schema": opt()},
+        {"name": "nodo_what_if", "description": "Impact simulation: what a change to a file "
+         "(transitive importers) or function (transitive callers) could affect.",
+         "schema": S(target={"type": "string", "description": "a file path or function name"})},
+        {"name": "nodo_symbols", "description": "Symbol-graph summary — functions/classes/methods "
+         "as nodes with defines/calls/inherits edges (full graph in .nodo/nodo-symbols.json).",
+         "schema": opt()},
     ]
 
 
@@ -330,6 +390,10 @@ def dispatch(state, name, args):
             return state.calls(a.get("symbol", ""))
         if name == "nodo_surprises":
             return state.surprises()
+        if name == "nodo_what_if":
+            return state.what_if(a.get("target", ""))
+        if name == "nodo_symbols":
+            return state.symbols()
         return f"Unknown tool: {name}"
     except Exception as e:
         return f"nodo error handling {name}: {e}"

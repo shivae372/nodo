@@ -92,6 +92,37 @@ def suggested_questions(hubs, surprises, knowledge, has_callgraph=False):
     return qs[:6]
 
 
+def architecture_insights(ctx, callgraph=None, symbol_graph=None):
+    """Deterministic, pattern-based architecture notes for the advanced report."""
+    lines = ["\n## Architecture insights\n"]
+    hubs = ctx.get('hubs', [])
+    iss = ctx.get('issues', [])
+    gods = [h for h in hubs if h.get('edges', 0) >= 12][:5]
+    if gods:
+        lines.append("- **God objects (high coupling — refactor candidates):** "
+                     + ', '.join(f"`{h['file']}` ({h['edges']} edges)" for h in gods))
+    ncyc = sum(1 for i in iss if i.get('type') == 'Import cycle')
+    if ncyc:
+        lines.append(f"- **Import cycles:** {ncyc} — break these for cleaner layering")
+    if callgraph and callgraph.get('available'):
+        from . import callgraph as _cg
+        top = _cg.top_hubs(callgraph, 5)
+        if top:
+            lines.append("- **Load-bearing functions (most-called):** "
+                         + ', '.join(f"`{n}()` ×{d}" for n, d in top))
+    if symbol_graph and symbol_graph.get('available'):
+        c = symbol_graph['counts']
+        lines.append(f"- **Symbol graph:** {c['symbols']} symbols / {c['calls']} call edges / "
+                     f"{c['inherits']} inheritance edge(s) across {c['files']} files")
+    ndead = sum(1 for i in iss if 'disconnected' in i.get('type', '').lower()
+                or 'never imported' in i.get('type', '').lower())
+    if ndead:
+        lines.append(f"- **Possibly dead surface:** {ndead} disconnected / orphaned finding(s)")
+    if len(lines) == 1:
+        lines.append("- _No notable architectural smells._")
+    return '\n'.join(lines) + '\n'
+
+
 def render_markdown(surprises, questions):
     """A report section for nodo-report.md."""
     out = ["\n## Surprising connections\n",

@@ -101,6 +101,9 @@ def main(argv=None):
     parser.add_argument('--calls', metavar='SYMBOL', default=None,
                         help="Show a function's call graph: who calls it and what it calls. "
                              'Needs tree-sitter (auto when installed, or run with --deep).')
+    parser.add_argument('--what-if', metavar='FILE|SYMBOL', default=None, dest='what_if',
+                        help='Impact simulation: what a change to this file (transitive importers) '
+                             'or function (transitive callers) could affect.')
     parser.add_argument('--benchmark', action='store_true',
                         help='Compare regex vs tree-sitter parsing (timing + edges) and exit.')
     parser.add_argument('--mcp', action='store_true',
@@ -253,6 +256,66 @@ def main(argv=None):
             querylog.record(out_dir, 'calls', args.calls)
         except Exception:
             pass
+        return 0
+
+    if args.what_if:
+        from collections import defaultdict as _dd
+        ignore_dirs = _ignore_dirs(cfg, args, out_dir, root)
+        nodes, edges, file_texts = build_graph(
+            root, ignore_dirs=ignore_dirs, respect_gitignore=not args.no_gitignore,
+            max_file_kb=cfg.get('max_file_kb', 512))
+        target = args.what_if
+        rels = [n['rel'] for n in nodes]
+        fmatch = [r for r in rels if r == target] or [r for r in rels if r.endswith('/' + target)] \
+            or [r for r in rels if r.endswith(target)]
+        out = []
+        if fmatch:
+            f = fmatch[0]
+            id_of = {n['rel']: n['id'] for n in nodes}
+            id2 = {n['id']: n['rel'] for n in nodes}
+            rev = _dd(list)
+            for e in edges:
+                if e.get('kind', 'import') == 'import':
+                    rev[e['target']].append(e['source'])
+            seen, stack = set(), [id_of[f]]
+            while stack:
+                c = stack.pop()
+                for d in rev.get(c, []):
+                    if d not in seen:
+                        seen.add(d)
+                        stack.append(d)
+            imp = sorted(id2[i] for i in seen)
+            out.append(f"WHAT-IF  changing {f}")
+            out.append(f"  {len(imp)} file(s) transitively import it — review if its exports change:")
+            out += [f"    <- {r}" for r in imp[:40]]
+            if len(imp) > 40:
+                out.append(f"    … +{len(imp) - 40} more")
+            if not imp:
+                out.append("    (nothing imports it — a leaf or entry point)")
+        else:
+            from . import callgraph as _cg
+            cg = _cg.build_call_graph(nodes, file_texts)
+            if not cg.get('available'):
+                print('--what-if on a function needs tree-sitter (or pass a file path).',
+                      file=sys.stderr)
+                return 1
+            callers = cg.get('callers', {})
+            if target not in callers and target not in cg.get('callees', {}):
+                print(f"'{target}' isn't a known file or function.", file=sys.stderr)
+                return 1
+            seen, stack = set(), [target]
+            while stack:
+                c = stack.pop()
+                for u in callers.get(c, []):
+                    if u not in seen:
+                        seen.add(u)
+                        stack.append(u)
+            out.append(f"WHAT-IF  changing function {target}()")
+            out.append(f"  {len(seen)} function(s) transitively call it (impact set):")
+            out += [f"    <- {s}()" for s in sorted(seen)[:40]]
+            if not seen:
+                out.append("    (nothing calls it — an entry point or reached dynamically)")
+        print('\n'.join(out))
         return 0
 
     if args.query:
@@ -609,8 +672,9 @@ def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):
     # questions. AST-only where relevant; never touches the vibe-coder default path.
     if getattr(args, 'deep', False):
         import json as _json
-        from . import callgraph as _cg, surprises as _sp
+        from . import callgraph as _cg, surprises as _sp, symgraph as _sg
         cg = _cg.build_call_graph(nodes, file_texts)
+        sg = _sg.build_symbol_graph(nodes, file_texts)
         sur = _sp.build_surprises(u_nodes, u_edges, u_comm)
         ctx_path = out_dir / 'nodo-context.json'
         try:
@@ -625,22 +689,55 @@ def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):
             (out_dir / 'nodo-callgraph.json').write_text(_json.dumps(cg, indent=2), encoding='utf-8')
             ctx['callgraph'] = {'edge_count': len(cg['edges']), 'def_count': cg['def_count'],
                                 'most_called': [{'fn': n, 'callers': d} for n, d in _cg.top_hubs(cg, 8)]}
+        if sg.get('available'):
+            (out_dir / 'nodo-symbols.json').write_text(_json.dumps(sg, indent=2), encoding='utf-8')
+            ctx['symbol_graph'] = sg['counts']
+        arch = _sp.architecture_insights(ctx, cg, sg)
         try:
             ctx_path.write_text(_json.dumps(ctx, indent=2), encoding='utf-8')
             rep = out_dir / 'nodo-report.md'
             if rep.exists():
                 rep.write_text(rep.read_text(encoding='utf-8', errors='ignore')
-                               + '\n' + _sp.render_markdown(sur, qs), encoding='utf-8')
+                               + '\n' + _sp.render_markdown(sur, qs) + arch, encoding='utf-8')
         except Exception:
             pass
         if not quiet:
             bits = []
+            if sg.get('available'):
+                c = sg['counts']
+                bits.append(f"{c['symbols']} symbols/{c['calls']} calls/{c['inherits']} inherits")
             if cg.get('available'):
                 h3 = _cg.top_hubs(cg, 3)
-                bits.append(f"{len(cg['edges'])} call edges/{cg['def_count']} fns"
-                            + ('; most-called ' + ', '.join(f'{n}()×{d}' for n, d in h3) if h3 else ''))
+                bits.append('most-called ' + ', '.join(f'{n}()×{d}' for n, d in h3) if h3 else '')
             bits.append(f"{len(sur)} surprising connection(s)")
-            print('  advanced: ' + '; '.join(bits) + ' → nodo-callgraph.json + report + context.json')
+            print('  advanced: ' + '; '.join(b for b in bits if b)
+                  + ' → nodo-symbols.json, nodo-callgraph.json, report + context.json')
+
+    # "Start here" orientation (both modes) — a token-cheap pointer for humans and
+    # agents: the load-bearing file + the first thing worth looking at.
+    try:
+        import json as _j
+        cx = _j.loads((out_dir / 'nodo-context.json').read_text(encoding='utf-8', errors='ignore'))
+        hub = (cx.get('hubs') or [{}])[0].get('file')
+        firstfix = None
+        for i in cx.get('issues', []):
+            if i.get('confidence') == 'high' and i.get('severity') in ('error', 'warn'):
+                firstfix = f"{i['type']} ({i.get('file', '')})"
+                break
+        sh = []
+        if hub:
+            sh.append(f"- Load-bearing file: `{hub}` (highest blast radius — change with care)")
+        if firstfix:
+            sh.append(f"- Look at first: {firstfix}")
+        if sh:
+            mdp = out_dir / 'nodo-context.md'
+            if mdp.exists():
+                mdp.write_text(mdp.read_text(encoding='utf-8', errors='ignore')
+                               + "\n## Start here\n\n" + '\n'.join(sh) + '\n', encoding='utf-8')
+            if not quiet and hub:
+                print(f'  start here: {hub}' + (f'  ·  first fix: {firstfix}' if firstfix else ''))
+    except Exception:
+        pass
 
     if not quiet:
         dt = time.time() - t0

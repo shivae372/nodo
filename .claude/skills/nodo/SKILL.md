@@ -61,10 +61,17 @@ not on this machine, tell the user to clone it first:
 the clone path. (If you happen to be inside the Nodo repo root, `python -m nodo .`
 also works.)
 
-After an advanced scan, you can trace functions directly:
+Advanced mode also builds a **symbol-level graph** (`.nodo/nodo-symbols.json` —
+functions/classes/methods as nodes with `defines`/`calls`/`inherits` edges) and an
+**architecture insights** section in `nodo-report.md` (god objects, cycles,
+load-bearing functions). After an advanced scan you can trace and simulate directly:
 ```bash
-python /path/to/nodo/nodo.py . --calls <function>   # who calls it + what it calls
+python /path/to/nodo/nodo.py . --calls <function>      # who calls it + what it calls
+python /path/to/nodo/nodo.py . --what-if <file|fn>     # transitive importers/callers a change hits
 ```
+
+Both modes also write a **"Start here"** pointer (load-bearing file + first thing to
+look at) to `nodo-context.md` — read it first to orient fast.
 
 ### Step 2 — Report
 
@@ -209,7 +216,9 @@ Nodo can also run as an MCP server so you can call it as **tools mid-session**
 `<context>` prompt for a file's issues — evidence to act on), `nodo_changed`
 (diff-aware blast radius of recent edits), `nodo_calls` (a function's call graph),
 `nodo_surprises` (cross-module / cross-modal bridge edges — see Advanced mode),
-plus `nodo_self_check` and `nodo_teach` (see Self-healing below). `nodo.py .
+`nodo_what_if` (impact simulation — transitive importers/callers of a file/fn),
+`nodo_symbols` (symbol-graph summary), plus `nodo_self_check` and `nodo_teach`
+(see Self-healing below). `nodo.py .
 --install` registers it in `.mcp.json`. Same rule applies: these are fast offline
 *evidence* — you read the result and tell the user the correct part.
 

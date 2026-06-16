@@ -80,8 +80,16 @@ deterministically** (no embeddings, no LLM, nothing leaves your machine) and let
 *grounded in real evidence* — never a hallucinated graph — plus everything vibe
 mode already gives you. Advanced mode also surfaces:
 
+- a **symbol-level graph** (`.nodo/nodo-symbols.json`) — functions, classes and
+  methods as first-class nodes with `defines` / `calls` / `inherits` edges, both
+  hierarchical (files → symbols) and flat. On `click` that's 1,300+ symbols and
+  59 inheritance edges,
 - a **function call graph** (`.nodo/nodo-callgraph.json`; trace any function with
   `--calls <fn>`, or ask *"what calls X / what does X call?"*),
+- **impact simulation** — `--what-if <file|fn>` shows the transitive importers /
+  callers a change could affect,
+- **architecture insights** in `nodo-report.md` — god objects, import cycles,
+  load-bearing functions, dead surface (deterministic, pattern-based),
 - **surprising connections** — ranked cross-module / cross-modal *bridge* edges
   (e.g. a design doc that links straight to a core class), the hidden links grep
   and similarity search miss; nodo gives the edge + evidence, your assistant
@@ -197,16 +205,17 @@ python nodo.py . --mcp          # run the stdio server
 python nodo.py . --install      # also registers it in .mcp.json for Claude Code / Cursor
 ```
 
-It exposes sixteen tools — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
+It exposes eighteen tools — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
 `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`, `nodo_topics`,
 `nodo_overview`, `nodo_refresh`, `nodo_fix_context` (the structured prompt for a
-file's issues — evidence to act on), `nodo_changed` (diff-aware blast radius of
-your recent edits), `nodo_calls` (a function's call graph), `nodo_surprises`
-(cross-module / cross-modal bridge edges), plus `nodo_self_check` and `nodo_teach`
-(the self-healing loop — see below) — all thin wrappers over the same engine the
-CLI uses (local, no network; only `nodo_teach` writes, and only to the local
-`.nodo/lessons.json`). If `mcp` isn't installed, nodo prints the install command
-and every other command keeps working — the zero-dependency core is never affected.
+file's issues), `nodo_changed` (diff-aware blast radius of recent edits),
+`nodo_calls` (a function's call graph), `nodo_surprises` (cross-module / cross-modal
+bridge edges), `nodo_what_if` (impact simulation), `nodo_symbols` (symbol-graph
+summary), plus `nodo_self_check` and `nodo_teach` (the self-healing loop — see
+below) — all thin wrappers over the same engine the CLI uses (local, no network;
+only `nodo_teach` writes, and only to the local `.nodo/lessons.json`). If `mcp`
+isn't installed, nodo prints the install command and every other command keeps
+working — the zero-dependency core is never affected.
 
 ## It remembers (personalization)
 
@@ -552,6 +561,7 @@ nodo [PATH] [options]
   --full               deepest scan: shortcut for --ast --multimodal
   --deep               advanced mode: --full + a function-level call graph
   --calls SYMBOL       a function's call graph (who calls it + what it calls)
+  --what-if FILE|SYMBOL  impact simulation: transitive importers / callers affected
   --benchmark          compare regex vs tree-sitter (timing + edges), then exit
   --ignore DIR         extra directory to skip (repeatable)
   --no-gitignore       don't read .gitignore for ignore dirs
