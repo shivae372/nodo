@@ -15,6 +15,17 @@ that works offline. No build step, no `npm install`, no account.
 > Built for solo "vibe coders" who lean on Claude Code / Cursor / Windsurf, and
 > for senior engineers who want a fast architectural read on an unfamiliar repo.
 
+### Install as a Claude Code plugin
+
+```text
+/plugin marketplace add shivae372/nodo
+/plugin install nodo@nodo
+```
+
+> Don't see `/plugin` (or a "path does not exist" error)? Your Claude Code is out of date — run **`claude update`**, then retry. Prefer no plugins? Nodo is **clone-and-run** — see [Quick start](#quick-start).
+
+Part of the **[claude-bootstrap](https://github.com/shivae372/claude-bootstrap) ecosystem**: claude-bootstrap (the capability/self-improvement layer) reads Nodo's architecture map automatically at session start.
+
 ![Nodo topology graph](docs/screenshot-graph.png)
 
 ---
