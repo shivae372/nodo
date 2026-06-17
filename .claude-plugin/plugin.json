@@ -5,7 +5,7 @@
   "author": { "name": "Shiva Kumar Esakki Pandiyan", "url": "https://github.com/shivae372" },
   "homepage": "https://github.com/shivae372/nodo",
   "repository": "https://github.com/shivae372/nodo",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "keywords": ["codebase-map", "architecture", "dependency-graph", "call-graph", "code-quality", "ai-context", "claude-code"],
   "skills": "./.claude/skills",
   "mcpServers": {
