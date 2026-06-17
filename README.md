@@ -18,11 +18,12 @@ that works offline. No build step, no `npm install`, no account.
 ### Install as a Claude Code plugin
 
 ```text
-/plugin marketplace add shivae372/nodo
+/marketplace
+#  ↳ when prompted "Enter marketplace source:", type:  shivae372/nodo
 /plugin install nodo@nodo
 ```
 
-> Don't see `/plugin` (or a "path does not exist" error)? Your Claude Code is out of date — run **`claude update`**, then retry. Prefer no plugins? Nodo is **clone-and-run** — see [Quick start](#quick-start).
+> Don't see `/marketplace` (or a "path does not exist" error)? Your Claude Code is out of date — run **`claude update`**, then retry. Prefer no plugins? Nodo is **clone-and-run** — see [Quick start](#quick-start).
 
 Part of the **[claude-bootstrap](https://github.com/shivae372/claude-bootstrap) ecosystem**: claude-bootstrap (the capability/self-improvement layer) reads Nodo's architecture map automatically at session start.
 
