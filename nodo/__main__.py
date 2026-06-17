@@ -117,7 +117,7 @@ def main(argv=None):
                         help='Compare regex vs tree-sitter parsing (timing + edges) and exit.')
     parser.add_argument('--mcp', action='store_true',
                         help='Run nodo as an MCP server (stdio) — exposes its query tools to '
-                             'agents mid-session. Needs: pip install mcp')
+                             'agents mid-session. Zero-dep built-in server; `pip install mcp` only for the official SDK')
     parser.add_argument('--multimodal', action='store_true',
                         help='Include images / PDFs / video as assets linked to the nodes near '
                              'them (contents are read by the Claude skill, not nodo).')
