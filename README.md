@@ -782,8 +782,7 @@ jobs:
 ```
 
 It runs the same engine as the CLI (pure Python standard library — no install
-step), so the comment is deterministic and the action never phones home. . (For `shivae372/nodo@v1.2` to resolve, tag a `v1.2`
-release; `@main` works in the meantime.)
+step), so the comment is deterministic and the action never phones home.
 
 ---
 
