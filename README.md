@@ -228,7 +228,7 @@ agent call nodo **as tools any time** — "what's the blast radius of the edit I
 just made?" — which is the stickier integration pattern.
 
 ```bash
-pip install mcp                 # optional (Python 3.10+); core stays zero-dep
+pip install mcp                 # OPTIONAL — --mcp runs zero-dep by default; install only for the official SDK
 python nodo.py . --mcp          # run the stdio server
 python nodo.py . --install      # also registers it in .mcp.json for Claude Code / Cursor
 ```
@@ -242,8 +242,8 @@ bridge edges), `nodo_what_if` (impact simulation), `nodo_symbols` (symbol-graph
 summary), plus `nodo_self_check` and `nodo_teach` (the self-healing loop — see
 below) — all thin wrappers over the same engine the CLI uses (local, no network;
 only `nodo_teach` writes, and only to the local `.nodo/lessons.json`). If `mcp`
-isn't installed, nodo prints the install command and every other command keeps
-working — the zero-dependency core is never affected.
+isn't installed, nodo falls back to a **built-in pure-stdlib MCP server** (identical
+tools), so `--mcp` works with no install — the zero-dependency core is never compromised.
 
 ## It remembers (personalization)
 
