@@ -102,9 +102,13 @@ def self_check(root, nodes, edges, file_texts, lessons, ignore_dirs):
                 and defs == 0 and len(imps) == 0 and outdeg.get(rel, 0) == 0):
             silent.append((rel, loc))
 
-        # 3) unresolved LOCAL imports — relative paths that didn't resolve to a file
+        # 3) unresolved LOCAL imports — relative paths that didn't resolve to a file.
+        #    Consult resolver_hints too (via resolve_with_hint), so once Claude
+        #    teaches a hint the self-check stops nagging about that import — the
+        #    heal loop actually completes instead of reporting it forever.
         local = [t for t in imps if t.startswith('.') or t.startswith('/')]
-        miss = [t for t in local if scanner.resolve_import(rel, t, idx) is None]
+        miss = [t for t in local
+                if scanner.resolve_with_hint(rel, t, idx, lessons=lessons) is None]
         if len(miss) >= 2:
             unresolved.append((rel, len(miss), sorted(set(miss))[:4]))
 
@@ -201,8 +205,10 @@ def _format(root, gaps, unknown, draft_stats=None):
         out.append('Local imports nodo could not resolve to a file:')
         for g in by['unresolved_local']:
             out.append(f"  • {g['file']}  ({g['count']}: {', '.join(g['examples'])})")
-        out.append("  → Add `resolver_hints` to a lesson mapping the import string → real path,")
-        out.append("    or confirm they're dynamic/computed (nodo stays silent rather than guess).")
+        out.append("  → Add `resolver_hints` to a lesson mapping the import string → real path")
+        out.append('    (or scope it as "<dir-substr>::<import>" when the same relative import')
+        out.append("    means different files in different folders), or confirm they're")
+        out.append("    dynamic/computed (nodo stays silent rather than guess).")
 
     out.append('')
     out.append("nodo found the spots; you (Claude) supply the fix — read a couple of the "

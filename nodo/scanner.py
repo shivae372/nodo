@@ -328,7 +328,8 @@ def _build_resolution_index(rel_paths):
     for d in (by_noext, by_basename):
         for k in list(d.keys()):
             d[k] = sorted(set(d[k]), key=lambda r: (_ext_rank(r), len(r), r))
-    return {'noext': by_noext, 'basename': by_basename, 'noext_keys': list(by_noext.keys())}
+    return {'noext': by_noext, 'basename': by_basename,
+            'noext_keys': list(by_noext.keys()), 'rels': set(rel_paths)}
 
 
 def _pick(bucket):
@@ -426,6 +427,28 @@ def resolve_import(importer_rel, target, idx, want_why=False):
     if bucket and len(bucket) == 1:
         return _r(bucket[0], 'ambiguous')
     return _r(None, None)
+
+
+def resolve_with_hint(importer_rel, target, idx, lessons=None, want_why=False):
+    """resolve_import, then — only if that failed AND a lesson supplies a matching
+    resolver_hint — apply the hint. Importer-aware (scoped hints resolve the same
+    relative import to different files per base dir) and value-flexible (the hint
+    value is re-resolved for this importer, so it need not be the exact stored
+    path). Centralized so build_graph and health.self_check agree on what counts
+    as 'resolved' after a teach — otherwise a taught hint heals the edge but the
+    self-check keeps nagging about the same import (the audit's complaint)."""
+    rel, why = resolve_import(importer_rel, target, idx, want_why=True)
+    if rel is None and lessons:
+        from . import lessons as _l
+        hint = _l.resolve_hint(target, lessons, importer_rel=importer_rel)
+        if hint:
+            if hint in idx.get('rels', ()):          # exact stored project path
+                rel, why = hint, 'inferred'
+            else:                                    # re-resolve the hint for this importer
+                rr = resolve_import(importer_rel, hint, idx)
+                if rr is not None:
+                    rel, why = rr, 'inferred'
+    return (rel, why) if want_why else rel
 
 
 def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
@@ -529,12 +552,7 @@ def build_graph(root, ignore_dirs=None, respect_gitignore=True, max_file_kb=512,
     for rel in rel_paths:
         src_id = id_of[rel]
         for target in raw_imports[rel]:
-            resolved, why = resolve_import(rel, target, idx, want_why=True)
-            if not resolved and _LESSONS:        # a taught resolver_hint can fix a missed import
-                from . import lessons as _l
-                hint = _l.resolve_hint(target, _LESSONS)
-                if hint in id_of:
-                    resolved, why = hint, 'inferred'
+            resolved, why = resolve_with_hint(rel, target, idx, lessons=_LESSONS, want_why=True)
             if resolved and resolved != rel:
                 key = (src_id, id_of[resolved])
                 if key not in seen:

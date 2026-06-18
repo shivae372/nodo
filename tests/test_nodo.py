@@ -1595,5 +1595,94 @@ class TestContractConfidence(unittest.TestCase):
         self.assertEqual(flagged[0]["confidence"], "high")
 
 
+# ── Resolver hints: importer-aware + value-flexible + heal-loop completion ────
+class TestResolverHints(unittest.TestCase):
+    def test_resolve_hint_scoping_and_backcompat(self):
+        from nodo import lessons
+        L = lessons._normalize({"resolver_hints": {
+            "@x": "a.ts",                          # global
+            "electron::./App": "shell/App.tsx",    # scoped to importers under electron/
+        }})
+        # back-compat: the original 2-arg call still works for a global key
+        self.assertEqual(lessons.resolve_hint("@x", L), "a.ts")
+        # scoped key only matches the importer whose path contains the scope
+        self.assertEqual(lessons.resolve_hint("./App", L, importer_rel="electron/main.ts"),
+                         "shell/App.tsx")
+        self.assertIsNone(lessons.resolve_hint("./App", L, importer_rel="src/main.ts"))
+        # global key matches any importer
+        self.assertEqual(lessons.resolve_hint("@x", L, importer_rel="anywhere/x.ts"), "a.ts")
+
+    def _idx(self, files):
+        from nodo import scanner
+        d = make_project(files)
+        nodes, _, _ = scanner.build_graph(d)
+        return scanner, scanner._build_resolution_index([n["rel"] for n in nodes])
+
+    def test_hint_value_need_not_be_exact_stored_path(self):
+        from nodo import lessons
+        scanner, idx = self._idx({
+            "src/main.ts": "import {App} from './App';\nexport const a=()=>App;\n",
+            "renderer/App.tsx": "export const App=()=>1;\n",
+            "shell/App.tsx": "export const App=()=>2;\n",   # makes basename 'App' ambiguous
+        })
+        # './App' is ambiguous (two App.tsx) → unresolved on its own
+        self.assertIsNone(scanner.resolve_import("src/main.ts", "./App", idx))
+        # hint VALUE 'renderer/App' is NOT an exact stored path (that's renderer/App.tsx),
+        # but it re-resolves for the importer — so the user needn't know the stored path
+        self.assertNotIn("renderer/App", idx["rels"])
+        L = lessons._normalize({"resolver_hints": {"./App": "renderer/App"}})
+        self.assertEqual(
+            scanner.resolve_with_hint("src/main.ts", "./App", idx, lessons=L), "renderer/App.tsx")
+
+    def test_same_relative_import_scoped_to_different_base_dirs(self):
+        # the audit's exact case: the SAME './App' from entry files in different
+        # base dirs must be able to resolve to different files via scoped hints.
+        from nodo import lessons
+        scanner, idx = self._idx({
+            "src/main.ts": "import {App} from './App';\nexport const a=()=>App;\n",
+            "electron/main.ts": "import {App} from './App';\nexport const b=()=>App;\n",
+            "renderer/App.tsx": "export const App=()=>1;\n",
+            "shell/App.tsx": "export const App=()=>2;\n",
+        })
+        self.assertIsNone(scanner.resolve_import("src/main.ts", "./App", idx))
+        L = lessons._normalize({"resolver_hints": {
+            "src::./App": "renderer/App.tsx",
+            "electron::./App": "shell/App.tsx",
+        }})
+        self.assertEqual(
+            scanner.resolve_with_hint("src/main.ts", "./App", idx, lessons=L), "renderer/App.tsx")
+        self.assertEqual(
+            scanner.resolve_with_hint("electron/main.ts", "./App", idx, lessons=L), "shell/App.tsx")
+
+    def test_self_check_clears_after_teaching_a_resolver_hint(self):
+        # the heal loop must COMPLETE: after teaching hints, --self-check should stop
+        # reporting the same imports as unresolved (previously it nagged forever
+        # because the check ignored resolver_hints).
+        from nodo import scanner, health, lessons
+        d = make_project({
+            "src/main.ts": ("import {T} from './widgets/Thing';\n"
+                            "import {G} from './widgets/Gadget';\n"
+                            "export const go=()=>[T,G];\n"),
+            "ui/Thing.tsx": "export const T=1;\n",
+            "other/Thing.tsx": "export const T=2;\n",      # Thing ambiguous → genuinely unresolved
+            "ui/Gadget.tsx": "export const G=1;\n",
+            "other/Gadget.tsx": "export const G=2;\n",     # Gadget ambiguous
+        })
+        nodes, edges, texts = scanner.build_graph(d)
+        ignore = set(scanner.DEFAULT_IGNORE_DIRS) | {".nodo"}
+        before = health.self_check(d, nodes, edges, texts, lessons.empty(), ignore)
+        self.assertTrue(any(g["kind"] == "unresolved_local" and g["file"] == "src/main.ts"
+                            for g in before["gaps"]),
+                        "expected an unresolved-local gap before teaching")
+        L = lessons._normalize({"resolver_hints": {
+            "./widgets/Thing": "ui/Thing.tsx",
+            "./widgets/Gadget": "ui/Gadget.tsx",
+        }})
+        after = health.self_check(d, nodes, edges, texts, L, ignore)
+        self.assertFalse(any(g["kind"] == "unresolved_local" and g["file"] == "src/main.ts"
+                             for g in after["gaps"]),
+                         "taught hints must clear the self-check nag (heal loop completes)")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

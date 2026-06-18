@@ -28,8 +28,14 @@ Schema (every field optional):
     }
   },
   "keep_alive": ["path/or/Symbol", ...],          # suppress dead/disconnected/orphan findings
-  "resolver_hints": { "<import string>": "real/rel/path.ext" }   # help a failed import resolve
-}
+  "resolver_hints": {                              # help a failed import resolve to a real file
+    "<import string>": "real/rel/path",            #   global: any importer of that string
+    "<importer substr>::<import string>": "path"   #   scoped: only importers whose rel path
+  }                                                #   contains <importer substr> — lets the SAME
+}                                                  #   relative import (e.g. "./App") map to
+                                                   #   different files in different base dirs.
+# The hint VALUE may be an exact project path OR any import string nodo can
+# resolve for that importer (so you don't have to know the stored rel path).
 """
 import json
 import os
@@ -255,5 +261,35 @@ def keep_alive_set(lessons):
     return set((lessons or {}).get('keep_alive', []))
 
 
-def resolve_hint(target, lessons):
-    return (lessons or {}).get('resolver_hints', {}).get(target)
+def resolve_hint(target, lessons, importer_rel=None):
+    """Return the hint VALUE for an unresolved import `target`, or None.
+
+    Keys may be:
+      - "<import string>"                 global — applies to any importer
+      - "<importer substr>::<import>"     scoped — applies only when importer_rel
+                                          contains <importer substr>. This is the
+                                          fix for "the same './App' in different
+                                          base dirs": a literal-string key alone
+                                          can't disambiguate them; a scoped key can.
+    The most specific match wins (scoped beats global; a longer scope beats a
+    shorter one), so a precise hint overrides a catch-all. The returned value is
+    still just a string — the caller (scanner.resolve_with_hint) resolves it to a
+    real file for the importer, so the value need not be the exact stored path."""
+    hints = (lessons or {}).get('resolver_hints', {})
+    if not hints:
+        return None
+    importer = (importer_rel or '').replace('\\', '/')
+    best = None  # (specificity, value)
+    for key, val in hints.items():
+        if '::' in key:
+            scope, imp = (s.strip() for s in key.split('::', 1))
+            if imp != target or not scope or scope not in importer:
+                continue
+            spec = 100 + len(scope)            # scoped beats global, longer = more specific
+        else:
+            if key != target:
+                continue
+            spec = 1
+        if best is None or spec > best[0]:
+            best = (spec, val)
+    return best[1] if best else None
