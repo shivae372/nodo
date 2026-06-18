@@ -297,7 +297,11 @@ _CONFIDENCE = {
     # structural facts / AST-verified → high
     'Import cycle': 'high',
     'Call passes more args than defined': 'high',
-    'Imported symbol not exported by source': 'high',
+    # Import-contract findings depend on the module resolver, which uses stem
+    # heuristics that can mis-bind (the audit's useAuthStore false positive). The
+    # detector now sets per-finding confidence (high only when resolution was
+    # exact); this is just the conservative fallback if it ever doesn't.
+    'Imported symbol not exported by source': 'medium',
     'Platform-gated dead UI': 'high',
     'Reassignment of an imported binding': 'high',
     'Possible hardcoded secret': 'high',
@@ -324,8 +328,12 @@ def _confidence_for(issue_type):
 
 
 def _apply_confidence(issues):
+    # Respect a confidence a detector already set per finding (e.g. crossfile
+    # downgrades a resolver-guessed contract to 'medium'); only fall back to the
+    # type-based default when none was provided.
     for iss in issues:
-        iss['confidence'] = _confidence_for(iss['type'])
+        if not iss.get('confidence'):
+            iss['confidence'] = _confidence_for(iss['type'])
     return issues
 
 

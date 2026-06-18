@@ -30,6 +30,21 @@ def _is_py(rel):
     return rel.lower().endswith('.py')
 
 
+# A JS/TS module *specifier* omits the extension ("./auth.store"), so its basename
+# IS the stem — we must strip a REAL code extension only, never a dotted name
+# segment like ".store" / ".config" / ".model". Stripping the latter mis-binds the
+# resolver: "auth.store" → "auth", matching the wrong file (auth.ts). That was the
+# audit's high-confidence false positive (useAuthStore "not exported"). Stripping
+# only known code extensions makes "auth.store" and "auth.store.ts" both → "auth.store".
+_CODE_EXT_RE = re.compile(r'\.(?:js|jsx|ts|tsx|mjs|cjs|vue|svelte|py)$', re.I)
+
+
+def _spec_stem(name):
+    """Basename of a module specifier or file path, minus a real code extension
+    only (so 'auth.store' and 'auth.store.ts' both reduce to 'auth.store')."""
+    return _CODE_EXT_RE.sub('', name.rsplit('/', 1)[-1])
+
+
 _TEST_RE = re.compile(
     r'(^|/)(tests?|specs?|__tests?__|e2e|__mocks__)/'  # test/ tests/ spec/ … even top-level
     r'|(\.|_)(test|spec)\.'                            # foo.test.js  foo_spec.rb
@@ -210,9 +225,15 @@ def _call_arg_count(text, name):
     return counts
 
 
-def _mk(sev, cat, typ, rel, detail, line=''):
-    return {'severity': sev, 'category': cat, 'type': typ, 'node': rel.split('/')[-1],
-            'file': rel, 'detail': detail, 'line': str(line) if line else '', 'snippet': []}
+def _mk(sev, cat, typ, rel, detail, line='', confidence=None):
+    """Build an issue dict. `confidence`, when set, is honoured by the detector
+    pipeline (detectors._apply_confidence) instead of the type-based default — so a
+    detector that knows its resolution was a guess can say so per finding."""
+    d = {'severity': sev, 'category': cat, 'type': typ, 'node': rel.split('/')[-1],
+         'file': rel, 'detail': detail, 'line': str(line) if line else '', 'snippet': []}
+    if confidence:
+        d['confidence'] = confidence
+    return d
 
 
 # ── 1. Broken contracts ───────────────────────────────────────────────────────
@@ -238,12 +259,12 @@ def broken_contracts(nodes, edges, file_texts, defs_by_file, id_to_rel):
         for name, source, line, is_type in imports:
             if is_type:
                 continue  # TS types are erased; lower risk, harder to parse safely
-            src_stem = re.sub(r'\.[^./]+$', '', source.split('/')[-1])
+            src_stem = _spec_stem(source)            # strips a REAL code ext only
             # resolve to targets whose file STEM exactly equals the import's last
             # segment (so '@/lib/google' matches lib/google.ts, NOT
             # lib/googleConnectionTokens.ts). Require a unique, parsed match.
             matches = [t for t in targets
-                       if re.sub(r'\.[^./]+$', '', t.rsplit('/', 1)[-1]) == src_stem
+                       if _spec_stem(t) == src_stem
                        and t in defs_by_file]
             if len(matches) != 1:
                 continue  # ambiguous or unresolved → don't risk a false positive
@@ -260,13 +281,23 @@ def broken_contracts(nodes, edges, file_texts, defs_by_file, id_to_rel):
                     or re.search(r'\bexports\.', tgt_text)):
                 continue
             if name not in tdefs and name[0].islower():
+                # Confidence reflects how much the RESOLVER had to guess — "high"
+                # must mean high precision. A plain relative import of a single-
+                # segment module ('./api') resolved to a unique parsed target is
+                # high-precision. Alias imports ('@/', '~') and multi-dot specifiers
+                # ('auth.store') are the fuzzy class that produced the audit's false
+                # positive, so they report as MEDIUM: a spot to verify, not a fact.
+                alias = source.startswith('@') or source.startswith('~')
+                multidot = '.' in src_stem
+                conf = ('high' if (source.startswith('.') and not alias and not multidot)
+                        else 'medium')
                 issues.append(_mk(
                     'warn', 'Contract', 'Imported symbol not exported by source',
                     rel,
                     f"`{name}` is imported from `{source}` but `{tgt}` does not "
                     f"appear to export it (renamed or removed?). This breaks at "
                     f"build/runtime and an AI editing only one file would miss it.",
-                    line))
+                    line, confidence=conf))
     return issues
 
 
@@ -372,10 +403,10 @@ def cycles(nodes, edges, id_to_rel, file_texts, max_report=12):
     for n in nodes:
         for nm, src, _l, is_type in _extract_named_imports(n['rel'], file_texts.get(n['rel'], '')):
             if is_type:
-                type_only.add((n['rel'], re.sub(r'\.[^./]+$', '', src.split('/')[-1])))
+                type_only.add((n['rel'], _spec_stem(src)))
 
     def is_type_edge(s, t):
-        s_rel, t_stem = id_to_rel[s], re.sub(r'\.[^./]+$', '', id_to_rel[t].rsplit('/', 1)[-1])
+        s_rel, t_stem = id_to_rel[s], _spec_stem(id_to_rel[t])
         return (s_rel, t_stem) in type_only
 
     adj = defaultdict(list)

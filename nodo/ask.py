@@ -48,6 +48,12 @@ _LEARN = re.compile(r"(struggl|don'?t understand|do(es)?\s+not\s+understand|can'
                     r"what\s+(should|can)\s+i\s+teach|teach\s+(you|nodo)|"
                     r"languages?\s+(do|does|you|nodo).{0,20}(know|understand|support|miss))", re.I)
 
+# Interrogatives — used to detect multi-clause questions ("where X and how Y"),
+# which must NOT be collapsed into a single route (the audit's worst mis-route:
+# a 2-part blast-radius/concept question became a symbol lookup for one stray
+# token). 2+ interrogatives across connector-delimited clauses → answer each.
+_INTERROG = re.compile(r'\b(where|how|what|whats|why|who|whom|when|which)\b', re.I)
+
 # common verbs/words that are ALSO function names — never treat these as a "symbol"
 # the user is asking about (e.g. "how do I ADD a route" must not match a func add())
 _SYMBOL_STOP = {
@@ -65,6 +71,17 @@ def _looks_like_symbol(t):
     if t.lower() in _SYMBOL_STOP:
         return False
     return any(c.isupper() for c in t) or '_' in t or len(t) >= 6
+
+
+def _symbol_strength(t):
+    """How distinctive a token is as the identifier the user means. CamelCase or
+    snake_case → 'strong' (almost certainly the symbol). A plain lowercase word
+    that only qualified by length (e.g. 'worker', 'handler', 'service') → 'weak':
+    likely an English word, so a symbol route deserves low confidence and a
+    concept alternate rather than a confidently-wrong single answer."""
+    return 'strong' if (any(c.isupper() for c in t) or '_' in t) else 'weak'
+
+
 # words to drop when falling back to concept search
 _QWORDS = {'what', 'where', 'which', 'who', 'how', 'why', 'when', 'does', 'do', 'is', 'are',
            'the', 'a', 'an', 'of', 'to', 'in', 'on', 'for', 'and', 'or', 'i', 'my', 'me',
@@ -105,8 +122,38 @@ def _ctx(out_dir):
         return {}
 
 
-def _hdr(mode, target=None):
-    return f'[nodo · {mode}{": " + target if target else ""}]\n'
+def _hdr(mode, target=None, confidence=None):
+    """Header that states how the question was interpreted — and, when given, how
+    sure nodo is. Routing is never a black box: the agent sees the route + target
+    + confidence and can discount a low-confidence read."""
+    c = f' · {confidence} confidence' if confidence else ''
+    return f'[nodo · {mode}{": " + target if target else ""}{c}]\n'
+
+
+def _split_questions(question):
+    """Split a genuinely multi-part question into independent sub-questions.
+
+    Returns 2+ items only when the user asks 2+ distinct things — detected as
+    >=2 interrogatives spread across connector-delimited ("and" / ";" / "&")
+    clauses. A single-intent question with an incidental "and" ("the db and the
+    cache") has just one interrogative and is left whole, so normal routing —
+    including "how does A connect to B" — is unaffected."""
+    if len(_INTERROG.findall(question)) < 2:
+        return [question]
+    parts = [p.strip(' ?.\t') for p in
+             re.split(r'\s+and\s+|\s*;\s*|\s+&\s+', question, flags=re.I)]
+    clauses = []
+    for p in (p for p in parts if p):
+        if _INTERROG.search(p):
+            clauses.append(p)
+        elif clauses:                 # a trailing fragment belongs to its clause
+            clauses[-1] = f'{clauses[-1]} and {p}'
+        else:
+            clauses.append(p)
+    clauses = list(dict.fromkeys(clauses))
+    if sum(1 for c in clauses if _INTERROG.search(c)) >= 2:
+        return clauses
+    return [question]
 
 
 def _issues_answer(ctx, file_filter=None, limit=15):
@@ -251,9 +298,25 @@ def _menu():
             "  • \"what are the topics / overview?\"        (knowledge graph)")
 
 
-def answer(question, nodes, edges, file_texts, out_dir, docs=None):
+def answer(question, nodes, edges, file_texts, out_dir, docs=None, _split=True):
     """Route a natural-language question to the right primitive and answer it.
     Every answer is prefixed with how it was interpreted, so it's never a black box."""
+    # Multi-part questions ("where is X registered AND how is the free tier
+    # determined?") must not be force-fit to one route — that's the audit's worst
+    # failure, where a 2-clause question collapsed to a symbol lookup for one stray
+    # token. Answer each part with its own route, clearly delimited.
+    if _split:
+        subs = _split_questions(question)
+        if len(subs) > 1:
+            blocks = []
+            for i, sub in enumerate(subs, 1):
+                blocks.append(f'({i}) "{sub}"\n'
+                              + answer(sub, nodes, edges, file_texts, out_dir,
+                                       docs=docs, _split=False))
+            return (f'[nodo · multi-part] your question asks {len(subs)} things — '
+                    'answering each with its own route (ask one at a time to force a '
+                    'single route):\n\n' + '\n\n'.join(blocks))
+
     ctx = _ctx(out_dir)
     idx = build_symbol_index(nodes, file_texts)
     files, syms = _resolve_files_and_symbols(question, nodes, set(idx))
@@ -334,12 +397,34 @@ def answer(question, nodes, edges, file_texts, out_dir, docs=None):
     if files:
         return _hdr('blast radius', files[0]) + query_file(out_dir, files[0])
 
-    # 6) a symbol named → definition + references
+    # 6) a symbol named → definition + references. Be honest about confidence: a
+    #    distinctive identifier (CamelCase / snake_case) is a high-confidence hit,
+    #    but a plain word that only matched by length (e.g. "worker") under
+    #    locational phrasing ("where/how/what is …") is probably a concept question.
+    #    Rather than return a confidently-wrong symbol (the audit's mis-route), LEAD
+    #    with the concept search and offer the symbol read as a labelled alternate.
     if syms:
         from .symbols import query_symbol
-        out = query_symbol(nodes, file_texts, syms[0])
+        sym = syms[0]
+        out = query_symbol(nodes, file_texts, sym)
         if out:
-            return _hdr('symbol', syms[0]) + out
+            strong = _symbol_strength(sym) == 'strong'
+            locational = bool(re.search(r'\b(where|how|why|what|whats)\b', question, re.I))
+            if strong or not locational:
+                return _hdr('symbol', sym, 'high' if strong else 'medium') + out
+            # weak token + locational intent → return BOTH routes, concept first
+            concept = ' '.join(w for w in re.findall(r'[A-Za-z][\w-]+', question)
+                               if w.lower() not in _QWORDS).strip()
+            if concept:
+                cres = explain_concept(out_dir, concept, file_texts=file_texts, docs=docs)
+                if 'No files clearly relate' not in cres:
+                    return (f'[nodo · concept: {concept}] (primary read — a "where/how" '
+                            f'question is usually about where something lives)\n' + cres
+                            + f'\n\n[nodo · symbol: {sym}] (alternate, low confidence — if '
+                              f'you actually meant the identifier `{sym}`)\n' + out)
+            return (_hdr('symbol', sym, 'low')
+                    + f'(`{sym}` is a common word, so low confidence this is the symbol '
+                      f'you meant — rephrase with the exact identifier if so.)\n' + out)
 
     # 7) topics / overview
     if _TOPIC.search(question):

@@ -1057,7 +1057,11 @@ class TestMCPServer(unittest.TestCase):
             self.skipTest("mcp is installed in this env")
         except Exception:
             pass
-        self.assertEqual(serve.serve(make_project({"a.py": "x=1\n"})), 1)
+        # Without the mcp SDK, serve() falls back to the built-in zero-dependency
+        # stdio server (serve_stdlib). With no piped stdin it reaches EOF and exits
+        # cleanly with 0 — graceful, no crash, no install required. (Earlier this
+        # asserted 1, from before the built-in fallback existed.)
+        self.assertEqual(serve.serve(make_project({"a.py": "x=1\n"})), 0)
 
     def test_install_mcp_registers_server(self):
         from nodo import hookinstall
@@ -1456,6 +1460,139 @@ class TestRoadmapBatch(unittest.TestCase):
         for f in files:
             ok, errs, _ = lessons.validate_lesson(json.loads(f.read_text(encoding="utf-8")))
             self.assertTrue(ok, f"{f.name}: {errs}")
+
+
+# ── UTF-8 console safety (the Windows cp1252 crash) ───────────────────────────
+class TestUtf8Output(unittest.TestCase):
+    def test_force_utf8_makes_unicode_summary_safe(self):
+        # Regression for the cp1252 crash: nodo built the whole graph then died on
+        # the final summary `print()` because a Windows console couldn't encode →.
+        import io
+        from nodo.__main__ import _force_utf8_output
+
+        # Before: a cp1252 stream genuinely cannot encode the arrow nodo prints.
+        a = io.TextIOWrapper(io.BytesIO(), encoding="cp1252")
+        with self.assertRaises(UnicodeEncodeError):
+            a.write("advanced: 9 symbols → nodo-symbols.json")
+            a.flush()
+
+        # After _force_utf8_output(): the same kind of stream is UTF-8 and the exact
+        # summary glyphs (→ • ↔ ✔) write without raising.
+        buf = io.BytesIO()
+        b = io.TextIOWrapper(buf, encoding="cp1252")
+        old_out, old_err = sys.stdout, sys.stderr
+        try:
+            sys.stdout = sys.stderr = b
+            _force_utf8_output()
+            print("advanced → nodo-symbols.json • ↔ ✔")
+            sys.stdout.flush()
+        finally:
+            sys.stdout, sys.stderr = old_out, old_err
+        self.assertEqual((b.encoding or "").lower(), "utf-8")
+        self.assertIn("→", buf.getvalue().decode("utf-8"))
+
+
+# ── NL router honesty (confidence + multi-clause, ask.py) ─────────────────────
+class TestAskRouting(unittest.TestCase):
+    def test_multiclause_splits_into_two(self):
+        from nodo.ask import _split_questions
+        subs = _split_questions(
+            "Where is the service worker registered and how is the free vs paid tier determined?")
+        self.assertEqual(len(subs), 2)
+        self.assertTrue(any("worker" in s for s in subs))
+        self.assertTrue(any("paid" in s for s in subs))
+
+    def test_single_clause_with_incidental_and_not_split(self):
+        from nodo.ask import _split_questions
+        # one interrogative + an incidental "and" must NOT split (don't break
+        # "how does A connect to B and the cache")
+        q = "how does middleware connect to the db and the cache"
+        self.assertEqual(_split_questions(q), [q])
+
+    def test_symbol_strength(self):
+        from nodo.ask import _symbol_strength
+        self.assertEqual(_symbol_strength("useAuthStore"), "strong")
+        self.assertEqual(_symbol_strength("verify_token"), "strong")
+        self.assertEqual(_symbol_strength("worker"), "weak")     # English word
+
+    def _ask(self, d, question):
+        return subprocess.run([sys.executable, "-m", "nodo", d, "--ask", question],
+                              cwd=str(REPO), capture_output=True, text=True).stdout
+
+    def test_multipart_question_not_collapsed_to_one_route(self):
+        # The exact audit failure: a 2-part "where X and how Y" question must NOT be
+        # force-fit to a single symbol lookup — it answers each part separately.
+        d = make_project({
+            "src/main.ts": "import './sw';\nimport './auth';\nimport './jassub';\n",
+            "src/sw.ts": "// service worker registration\n"
+                         "export function registerSW(){ return navigator.serviceWorker.register('/sw.js'); }\n",
+            "src/auth.ts": "// authentication and authorization\nexport function checkAuth(u){ return !!u; }\n",
+            "src/jassub.ts": "export function worker(){ return 'subtitle worker'; }\n",
+        })
+        out = self._ask(d, "where is the worker registered and how is auth handled")
+        self.assertIn("multi-part", out)
+        self.assertIn("(1)", out)
+        self.assertIn("(2)", out)
+
+    def test_weak_symbol_under_locational_phrasing_returns_both_routes(self):
+        # "where is the worker …" with the weak token "worker" must lead with the
+        # concept search and offer the symbol as a labelled, low-confidence alternate
+        # — never a confidently-wrong bare symbol answer.
+        d = make_project({
+            "src/main.ts": "import './sw';\nimport './jassub';\n",
+            "src/sw.ts": "// service worker registration\n"
+                         "export function registerSW(){ return navigator.serviceWorker.register('/sw.js'); }\n",
+            "src/jassub.ts": "export function worker(){ return 'subtitle worker'; }\n",
+        })
+        out = self._ask(d, "where is the worker registered")
+        self.assertNotIn("multi-part", out)        # single clause
+        self.assertIn("[nodo · concept:", out)  # concept is the primary read
+        self.assertIn("alternate", out)             # symbol offered as alternate
+        self.assertIn("worker", out)
+
+
+# ── Confidence calibration on resolver-dependent contract checks ──────────────
+class TestContractConfidence(unittest.TestCase):
+    def _contract_findings(self, files):
+        issues = detectors.detect_all(*graph(files)[1:])
+        return [i for i in issues if "not exported" in i["type"]]
+
+    def test_multidot_module_not_falsely_flagged(self):
+        # './auth.store' must bind to auth.store.ts (where useAuthStore IS exported),
+        # not to a sibling auth.ts — the audit's high-confidence false positive.
+        flagged = self._contract_findings({
+            "src/auth.store.ts": "export const useAuthStore = () => ({});\n",
+            "src/auth.ts": "export const foo = 1;\n",
+            "src/consumer.ts": ("import { useAuthStore } from './auth.store';\n"
+                                "import { foo } from './auth';\n"
+                                "export const w = () => useAuthStore();\n"),
+            "src/index.ts": "import './consumer';\n",
+        })
+        self.assertFalse(flagged, f"useAuthStore IS exported by auth.store.ts; got {flagged}")
+
+    def test_multidot_real_miss_is_medium_not_high(self):
+        # a genuinely missing export reached through a multi-dot module is still
+        # flagged, but MEDIUM — the resolver had to guess, so it's never 'high'.
+        flagged = self._contract_findings({
+            "src/user.model.ts": "export const realThing = 1;\n",
+            "src/consumer.ts": ("import { goneThing } from './user.model';\n"
+                                "export const w = () => goneThing;\n"),
+            "src/index.ts": "import './consumer';\n",
+        })
+        self.assertTrue(flagged, "a truly-missing export should still be flagged")
+        self.assertEqual(flagged[0]["confidence"], "medium")
+
+    def test_clean_relative_contract_stays_high(self):
+        # a plain './api' single-name import resolved to a unique parsed target is
+        # high-precision → high confidence is still earned.
+        flagged = self._contract_findings({
+            "src/api.ts": "export function getUser(id){ return id; }\n",
+            "src/consumer.ts": ("import { getUserX } from './api';\n"
+                                "export const w = () => getUserX(1);\n"),
+            "src/index.ts": "import './consumer';\n",
+        })
+        self.assertTrue(flagged)
+        self.assertEqual(flagged[0]["confidence"], "high")
 
 
 if __name__ == "__main__":

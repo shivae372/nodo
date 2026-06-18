@@ -27,7 +27,25 @@ from .hookinstall import emit_context, install_hook, install_agents, install_mcp
 from .insights import entry_flows, sensitive_map, api_routes
 
 
+def _force_utf8_output():
+    """Make console output UTF-8 safe everywhere — notably Windows, whose default
+    cp1252 console raises UnicodeEncodeError the instant nodo prints a glyph like
+    →, •, ↔ or ✔. That turned a successful scan into a crash on the very last
+    summary line (the graph was built, then `print()` died). We reconfigure
+    stdout/stderr to UTF-8 with errors='replace' so a first run can never fail on
+    output encoding. Equivalent to setting PYTHONUTF8=1, but automatic — a user
+    shouldn't have to discover that workaround to get their artifacts."""
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError, OSError):
+            # Streams without reconfigure (older wrappers), detached, or already
+            # closed — nothing to do; the OS default encoding stays in effect.
+            pass
+
+
 def main(argv=None):
+    _force_utf8_output()
     parser = argparse.ArgumentParser(
         prog='nodo',
         description='Map any codebase: dependency graph + issue detection + AI-agent artifacts. Zero dependencies.',
@@ -100,7 +118,12 @@ def main(argv=None):
     parser.add_argument('--deep', action='store_true',
                         help='Advanced mode: the heaviest semantic scan — tree-sitter AST + '
                              'multimodal + a function-level call graph + the knowledge graph. '
-                             'For deep understanding; the vibe-coder default is a fast regex scan.')
+                             'Adds OVER --ast: the call graph (who-calls-whom — best for OO / '
+                             'procedural code with real function calls) and the knowledge graph '
+                             '(doc/PDF topic communities). On pure import/ESM codebases --ast '
+                             'already does most of the work and the call graph may be empty; the '
+                             'run prints an "advanced:" line reporting what extra it actually '
+                             'found. The vibe-coder default is a fast regex scan.')
     parser.add_argument('--calls', metavar='SYMBOL', default=None,
                         help="Show a function's call graph: who calls it and what it calls. "
                              'Needs tree-sitter (auto when installed, or run with --deep).')
@@ -686,7 +709,18 @@ def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):
                              'silent_extraction': 'silent file(s)',
                              'unresolved_local': 'unresolved-import file(s)'}
                     bits = [f'{n} {label[k]}' for k, n in sorted(kinds.items()) if k in label]
-                    if bits:
+                    # When one unknown extension dominates, name it and point straight
+                    # at the auto-draft — the teach/heal loop is nodo's differentiator,
+                    # so surface it concretely instead of a generic nudge it's easy to
+                    # skim past. A teach is then a single command away.
+                    unknown = sorted((g for g in hc['gaps'] if g['kind'] == 'unknown_language'),
+                                     key=lambda g: -g.get('files', 0))
+                    if unknown and unknown[0].get('files', 0) >= 3:
+                        ext, cnt = unknown[0]['ext'], unknown[0]['files']
+                        print(f"  self-check: {cnt} {ext} file(s) nodo can't parse yet — run "
+                              f"`nodo . --self-check` to auto-draft a {ext} lesson, then "
+                              f"`--teach` it (the next scan heals: {ext} symbols/imports resolve).")
+                    elif bits:
                         print(f"  self-check: {', '.join(bits)} — run "
                               f"`nodo . --self-check` to see what to teach nodo")
     except Exception:
