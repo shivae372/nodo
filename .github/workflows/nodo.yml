@@ -11,7 +11,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.x'
-      - uses: shivae372/nodo@v1.2.2
+      - uses: shivae372/nodo@v1.3.0
         with:
           path: '.'
           args: '--no-ast'
