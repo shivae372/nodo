@@ -615,8 +615,8 @@ def orphaned_but_substantial(nodes, edges, file_texts, defs_by_file, soft_refs,
                              max_report=8, max_ratio=0.20):
     """A file with real surface area (many exports / lots of code) that NOTHING
     imports — "implemented but disconnected". The broken-feature smell an AI agent
-    introduces when it builds a feature and never wires it in. Graphify can't see
-    this; it's a pure structural signal.
+    introduces when it builds a feature and never wires it in. A pure structural
+    signal — connectivity viewers map what connects, not what should but doesn't.
 
     Reliability gates (so it can NEVER flood — a flood would destroy trust):
       - tests and entry-point files are excluded from the eligible pool;
