@@ -90,3 +90,39 @@ def save_detect(out_dir, signature, issues):
                                  'issues': issues}), encoding='utf-8')
     except Exception:
         pass
+
+
+# ── Incremental INSIGHTS cache ────────────────────────────────────────────────
+# Derived insights (entry flows, sensitive-surface map, API routes) are pure
+# functions of the file set + contents + parser — the sensitive map alone is a
+# 7-regex battery over every file's full text, the dominant cost of a no-change
+# rescan on large repos. Cached under the same signature discipline as detection:
+# identical inputs → identical outputs, any mismatch recomputes.
+
+INSIGHTS_NAME = 'insights-cache.json'
+INSIGHTS_VERSION = 1
+
+
+def load_insights(out_dir):
+    """Return (signature, payload) from the last insights run, or (None, None)."""
+    p = Path(out_dir) / INSIGHTS_NAME
+    if not p.exists():
+        return None, None
+    try:
+        data = json.loads(p.read_text(encoding='utf-8', errors='ignore'))
+        if data.get('version') != INSIGHTS_VERSION:
+            return None, None
+        return data.get('signature'), data.get('payload')
+    except Exception:
+        return None, None
+
+
+def save_insights(out_dir, signature, payload):
+    """Persist the insights payload. Never raises."""
+    p = Path(out_dir) / INSIGHTS_NAME
+    try:
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(json.dumps({'version': INSIGHTS_VERSION, 'signature': signature,
+                                 'payload': payload}), encoding='utf-8')
+    except Exception:
+        pass
