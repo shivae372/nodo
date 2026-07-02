@@ -98,6 +98,9 @@ def main(argv=None):
     parser.add_argument('--emit-context', action='store_true',
                         help="Print the SessionStart JSON context envelope and exit "
                              "(this is what the installed hook runs).")
+    parser.add_argument('--emit-nudge', action='store_true',
+                        help="PreToolUse hook body: print a once-per-session JSON nudge "
+                             "steering the agent to the nodo map before broad Grep/Glob.")
     parser.add_argument('--include-vendor', action='store_true',
                         help='Also analyse reference/vendored/example dirs (off by default '
                              'so third-party noise never drowns your own code).')
@@ -141,6 +144,10 @@ def main(argv=None):
     parser.add_argument('--mcp', action='store_true',
                         help='Run nodo as an MCP server (stdio) — exposes its query tools to '
                              'agents mid-session. Zero-dep built-in server; `pip install mcp` only for the official SDK')
+    parser.add_argument('--mcp-tools', choices=('lite', 'full'), default=None,
+                        help="MCP tool surface: 'lite' (default) advertises 5 token-cheap tools "
+                             "(tool definitions cost agent context every turn; nodo_ask routes to "
+                             "the rest); 'full' advertises all tools individually")
     parser.add_argument('--multimodal', action='store_true',
                         help='Include images / PDFs / video as assets linked to the nodes near '
                              'them (contents are read by the Claude skill, not nodo).')
@@ -279,11 +286,17 @@ def main(argv=None):
 
     if args.mcp:
         from . import serve as _serve
-        return _serve.serve(str(root), str(out_dir))
+        return _serve.serve(str(root), str(out_dir), tools=args.mcp_tools)
 
     if args.emit_context:
         # invoked by the Claude Code hook — print JSON envelope, nothing else.
         emit_context(out_dir)
+        return 0
+
+    if args.emit_nudge:
+        # invoked by the PreToolUse hook — once-per-session steering nudge.
+        from .hookinstall import emit_nudge
+        emit_nudge(out_dir)
         return 0
 
     if args.hook:
@@ -726,10 +739,29 @@ def _run_scan(root, out_dir, project_name, cfg, args, quiet=False):
     except Exception:
         pass
 
-    # derived insights — auto-generated flows + sensitive surfaces + API ref
-    flows = entry_flows(nodes, edges)
-    sensitive = sensitive_map(nodes, file_texts)
-    apis = api_routes(nodes, file_texts)
+    # derived insights — auto-generated flows + sensitive surfaces + API ref.
+    # Cached under the detection signature: on a no-change rescan the sensitive
+    # map's full-text regex battery (the dominant warm-rescan cost on large
+    # repos) is skipped entirely. Deterministic inputs → identical outputs.
+    flows = sensitive = apis = None
+    if detect_sig is not None:
+        cached_isig, ipayload = _cache.load_insights(out_dir)
+        if cached_isig == detect_sig and isinstance(ipayload, dict):
+            flows = ipayload.get('flows')
+            sensitive = ipayload.get('sensitive')
+            apis = ipayload.get('apis')
+            if flows is not None and sensitive is not None and apis is not None:
+                if not quiet:
+                    print('  insights: reused cached results (nothing relevant changed)')
+            else:
+                flows = sensitive = apis = None
+    if flows is None:
+        flows = entry_flows(nodes, edges)
+        sensitive = sensitive_map(nodes, file_texts)
+        apis = api_routes(nodes, file_texts)
+        if detect_sig is not None:
+            _cache.save_insights(out_dir, detect_sig,
+                                 {'flows': flows, 'sensitive': sensitive, 'apis': apis})
 
     # design docs (always indexed — cheap) + optional multimodal asset linking
     docs = discover_docs(root, ignore_dirs)
