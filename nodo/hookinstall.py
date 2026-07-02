@@ -48,10 +48,80 @@ def emit_context(out_dir):
     }))
 
 
+def emit_nudge(out_dir):
+    """PreToolUse hook body: before the agent's first broad Grep/Glob of the session,
+    inject a ONE-TIME, ~60-token nudge to consult the nodo map instead of scanning
+    raw files (the moment tokens are about to burn — the map answers structure and
+    impact questions for a fraction of the cost). Graphify-style steering, but
+    deduped per session so the hook itself never becomes a token tax.
+
+    Reads the hook JSON from stdin (session_id), emits additionalContext only once
+    per session, and always prints valid JSON — on any error it prints {} so the
+    hook can never break or block a session (it never sets permissionDecision).
+    """
+    import sys
+    try:
+        try:
+            payload = json.loads(sys.stdin.read() or '{}')
+        except Exception:
+            payload = {}
+        session = str(payload.get('session_id') or 'default')[:64]
+        out = Path(out_dir)
+        md_path = out / 'nodo-context.md'
+        if not md_path.exists():                      # no map → stay silent
+            print('{}')
+            return
+        marker_dir = out / '.nudge'
+        marker_dir.mkdir(parents=True, exist_ok=True)
+        marker = marker_dir / f'{"".join(c for c in session if c.isalnum() or c in "-_") or "default"}'
+        if marker.exists():                           # already nudged this session
+            print('{}')
+            return
+        # prune stale markers so the dir never grows unbounded
+        try:
+            import time as _t
+            cutoff = _t.time() - 7 * 86400
+            for m in marker_dir.iterdir():
+                if m.stat().st_mtime < cutoff:
+                    m.unlink()
+        except Exception:
+            pass
+        marker.write_text('1', encoding='utf-8')
+        # ground the nudge in THIS repo: name its real load-bearing file
+        hub = ''
+        try:
+            ctx = json.loads((out / 'nodo-context.json').read_text(encoding='utf-8',
+                                                                   errors='ignore'))
+            hubs = ctx.get('hubs') or []
+            if hubs:
+                hub = hubs[0].get('file', '')
+        except Exception:
+            pass
+        example = f' (e.g. --query {hub})' if hub else ''
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "additionalContext": (
+                    "This repo has a nodo codebase map — cheaper than broad grep/reads "
+                    "for structure and impact questions. Try `nodo . --ask \"<question>\"` "
+                    f"or `--query <file>` for blast radius{example}. "
+                    "Summary: .nodo/nodo-context.md"
+                ),
+            }
+        }))
+    except Exception:
+        print('{}')
+
+
 def _hook_command(nodo_launcher):
     """The command the hook runs. Uses an absolute path to this repo's launcher."""
     launcher = str(Path(nodo_launcher).resolve()).replace('\\', '/')
     return f'python "{launcher}" . --emit-context'
+
+
+def _nudge_command(nodo_launcher):
+    launcher = str(Path(nodo_launcher).resolve()).replace('\\', '/')
+    return f'python "{launcher}" . --emit-nudge'
 
 
 def install_hook(project_root, nodo_launcher):
@@ -97,11 +167,34 @@ def install_hook(project_root, nodo_launcher):
     replaced = len(session_start) < before
     session_start.append(hook_entry)
 
+    # PreToolUse steering (Graphify-style): before the session's FIRST broad
+    # Grep/Glob, nudge the agent toward the map instead of raw file scans.
+    # --emit-nudge is once-per-session and never blocks, so the hook itself
+    # stays token-cheap.
+    nudge_entry = {
+        'matcher': 'Grep|Glob',
+        'hooks': [{
+            'type': 'command',
+            'command': _nudge_command(nodo_launcher),
+            'timeout': 10,
+        }],
+    }
+    pre_tool = hooks.setdefault('PreToolUse', [])
+    pre_tool[:] = [
+        h for h in pre_tool
+        if not any('--emit-nudge' in (sub.get('command', ''))
+                   for sub in h.get('hooks', []))
+    ]
+    pre_tool.append(nudge_entry)
+
     settings_path.write_text(json.dumps(settings, indent=2), encoding='utf-8')
     verb = 'Updated' if replaced else 'Installed'
-    return (f'{verb} Nodo SessionStart hook in {settings_path}\n'
-            f'  Command: {command}\n'
-            '  Claude Code will now load the architecture map automatically at session start.\n'
+    return (f'{verb} Nodo hooks in {settings_path}\n'
+            f'  SessionStart: {command}\n'
+            f'  PreToolUse (Grep|Glob): {_nudge_command(nodo_launcher)} '
+            '(one-time per session map nudge)\n'
+            '  Claude Code will now load the architecture map automatically at session start\n'
+            '  and be steered to the map before its first broad file scan.\n'
             '  (Run a normal scan first so .nodo/nodo-context.md exists.)')
 
 
@@ -188,6 +281,7 @@ def install_mcp(project_root, nodo_launcher):
     try:
         p.write_text(json.dumps(cfg, indent=2) + '\n', encoding='utf-8')
         return ('.mcp.json — registered the "nodo" MCP server for Claude Code / Cursor. '
-                'Needs: pip install mcp')
+                'Zero-dep built-in server; `pip install mcp` only for the official SDK. '
+                'Default tool surface is lite (token-cheap) — add --mcp-tools full for all tools.')
     except Exception as e:
         return f'could not write .mcp.json: {e}'
