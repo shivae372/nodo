@@ -128,7 +128,7 @@ which and why). And the call graph exports to **Mermaid** or **Graphviz DOT**
 ("*hub-and-spoke around `app.ts`, layered, loosely coupled, carrying some debt*"):
 shape, god module, coupling, health, and themes, in one paragraph grounded in the
 graph. It's fast and zero-dep, so vibe coders get it too (`--ask "what's the vibe?"`,
-or MCP `nodo_vibe_summary`).
+or MCP `nodo_vibe_summary` with `--mcp-tools full`).
 
 ---
 
@@ -233,17 +233,34 @@ python nodo.py . --mcp          # run the stdio server
 python nodo.py . --install      # also registers it in .mcp.json for Claude Code / Cursor
 ```
 
-It exposes nineteen tools (incl. `nodo_vibe_summary`) — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
+**Token-cheap by default.** MCP tool definitions sit in your agent's context window
+on *every turn*, called or not — nineteen tools cost ~1.3k tokens per turn before the
+first question is even asked. So by default nodo advertises a **lite surface of five
+tools** (~0.4k tokens): `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`,
+`nodo_changed`, `nodo_refresh`. Nothing is lost — `nodo_ask` routes natural-language
+questions to issues, hubs, topics, overview, import paths, and concept search.
+
+Want every tool individually addressable? Run `--mcp --mcp-tools full` (or set
+`NODO_MCP_TOOLS=full`). Full mode exposes all nineteen — the lite five plus
 `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`, `nodo_topics`,
-`nodo_overview`, `nodo_refresh`, `nodo_fix_context` (the structured prompt for a
-file's issues), `nodo_changed` (diff-aware blast radius of recent edits),
+`nodo_overview`, `nodo_fix_context` (the structured prompt for a file's issues),
 `nodo_calls` (a function's call graph), `nodo_surprises` (cross-module / cross-modal
 bridge edges), `nodo_what_if` (impact simulation), `nodo_symbols` (symbol-graph
-summary), plus `nodo_self_check` and `nodo_teach` (the self-healing loop — see
-below) — all thin wrappers over the same engine the CLI uses (local, no network;
+summary), `nodo_vibe_summary`, plus `nodo_self_check` and `nodo_teach` (the
+self-healing loop — see below). Either way the server **accepts** all nineteen —
+lite only changes what is *advertised*, so the self-healing loop still works
+mid-session if your agent knows to call it.
+
+All tools are thin wrappers over the same engine the CLI uses (local, no network;
 only `nodo_teach` writes, and only to the local `.nodo/lessons.json`). If `mcp`
 isn't installed, nodo falls back to a **built-in pure-stdlib MCP server** (identical
 tools), so `--mcp` works with no install — the zero-dependency core is never compromised.
+
+> **Static files vs MCP — pick one per project.** The SessionStart hook injects
+> `nodo-context.md` once at session start for near-zero per-turn cost; the MCP
+> server adds always-resident tool definitions in exchange for live mid-session
+> queries. Running both pays twice — if you keep the hook, lite mode makes the
+> MCP overhead small.
 
 ## It remembers (personalization)
 
@@ -345,7 +362,7 @@ answering questions the agent would otherwise spend reads on.
 ### Blast-radius queries
 
 Instead of letting an agent open ten files to figure out "what breaks if I touch
-this", ask Nodo. One command, ~200 tokens, no rescan:
+this", ask Nodo. One command, ~150–400 tokens (measured on a 3k-file repo), no rescan:
 
 ```bash
 python nodo.py . --query lib/auth.ts
@@ -405,7 +422,7 @@ zero-dependency BM25 keyword search with a code-aware tokenizer (splits
 `login`/`jwt`/`session`. It also folds in your **design docs** (Markdown / specs),
 so `--explain "audio features"` surfaces the spec that *defines* a feature next
 to the code that implements it — letting you judge code against intent. Both
-answer in a few hundred tokens.
+answer in a few hundred tokens (measured 150–400 on a 3k-file repo).
 
 ### Auto-load the map at session start
 
@@ -416,9 +433,17 @@ architecture summary — no grepping to rebuild context:
 python nodo.py . --hook
 ```
 
-This writes a `SessionStart` hook into `.claude/settings.json` that runs
-`nodo.py . --emit-context`, injecting `nodo-context.md` into the agent's context
-automatically. It's idempotent and preserves any existing settings.
+This writes two hooks into `.claude/settings.json` (idempotent, preserves any
+existing settings):
+
+- **`SessionStart`** runs `--emit-context`, injecting `nodo-context.md` into the
+  agent's context automatically at session start.
+- **`PreToolUse` on `Grep|Glob`** runs `--emit-nudge`: the moment the agent is
+  about to burn tokens on its first broad file scan, it gets a one-line steer to
+  the map instead ("try `--query <your top hub>` / `--ask`"). Emitted **once per
+  session** and never blocking, so the nudge itself stays token-free after the
+  first Grep. This is the query-first steering pattern that makes precomputed
+  maps actually get used mid-session, not just read at startup.
 
 ---
 
@@ -461,8 +486,9 @@ args safely).
 **Disconnected features** — a file with real surface area (many exports / lots
 of code) that *nothing* in the project imports and whose name appears in no
 import. The "implemented but never wired in" smell — exactly what an AI agent
-introduces when it builds a feature and forgets to connect it. Graphify can't
-see this.
+introduces when it builds a feature and forgets to connect it. A pure structural
+signal — knowledge-graph viewers (Graphify included) map what connects, not
+what *should* connect but doesn't.
 **Platform-gated dead UI** — a component whose handlers all call an injected
 bridge with optional chaining (`window.electronAPI?.x()`) and no fallback, so it
 silently no-ops outside that platform (a browser/SSR build).
@@ -536,8 +562,20 @@ else substring. Suppressed issues don't count toward the per-type cap.
 
 **Import graph + categorization** work on every language via the resolver
 (relative paths, aliases, dir-index): JS/TS/JSX/TSX/Vue/Svelte and Python are
-deepest (routes, components, hooks, models understood); Go, Rust, Java, C/C++,
-C#, Ruby, PHP and others resolve at the file-dependency level.
+deepest (routes, components, hooks, models understood). **Rust, Go, Java/Kotlin/
+Scala, C#, and PHP have first-class import extractors** — `use crate::…`/`mod x;`
+(with the `foo/mod.rs` convention), Go single and block imports (stdlib filtered
+so `import "errors"` never forges an edge to a local `errors.go`), dotted
+`import com.foo.Bar;` / `using Foo.Bar;`, and backslashed `use Foo\Bar;` — plus a
+**directory-package fallback** for languages that import a package directory
+rather than a file (Go/Java/PHP: the dir resolves to its representative file).
+C/C++, Ruby and others resolve at the file-dependency level via the generic
+extractor.
+
+Scale: the resolver and doc-mention linker are index-backed (no per-import or
+per-name full scans), so multi-thousand-file repos scan in seconds — e.g. a
+12k-file, 4-language corpus in ~30s cold / ~9s rescan (parse, detection, and
+insights caches).
 
 **Tree-sitter AST symbol extraction** (auto when tree-sitter is installed, or
 `--ast`) covers the mainstream set — Python, JS, TS, TSX, Go, Rust, Java, C, C++,
@@ -579,9 +617,13 @@ nodo [PATH] [options]
   --vibe               print a deterministic architectural "vibe check", then exit
   --smart              auto-pick vibe vs --deep from project size / languages / docs
   --export FORMAT      export the call graph as `mermaid` or `dot`, then exit
-  --hook               install a Claude Code SessionStart hook, then exit
+  --hook               install the Claude Code hooks (SessionStart map injection +
+                       once-per-session PreToolUse map nudge), then exit
   --install            wire the map into Claude + Cursor + AGENTS.md (+ MCP), then exit
   --mcp                run as an MCP server (stdio) — agents call nodo's tools live
+  --mcp-tools MODE     MCP tool surface: 'lite' (default, 5 token-cheap tools) or
+                       'full' (all 19) — definitions cost agent context every turn
+  --emit-nudge         print the PreToolUse nudge JSON (what the installed hook runs)
   --include-vendor     also analyse reference/vendored/example dirs
   --multimodal         link images/PDFs/video to the nodes near them
   --docs-only          index doc text but skip the multimodal asset pass
@@ -775,7 +817,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with: { python-version: '3.x' }
-      - uses: shivae372/nodo@v1.2.2
+      - uses: shivae372/nodo@v1.3.0
         with:
           path: '.'        # project root to scan
           args: '--no-ast' # fast regex pass; drop for tree-sitter accuracy
