@@ -37,7 +37,7 @@ options; reach for `--deep` only when depth is wanted.
 | What nodo can't parse (then teach it) | `--self-check` → `--teach lesson.json` |
 | Export call graph for a diagram | `--export mermaid` / `--export dot` |
 | Wire into Claude / Cursor / CI | `--install` (hook + AGENTS.md + Cursor rule + .mcp.json) |
-| Live tools mid-session | `--mcp` (19 tools — see below) |
+| Live tools mid-session | `--mcp` (5 token-cheap tools by default; `--mcp-tools full` for all 19 — see below) |
 
 **Mental model (say this to users if they ask):** nodo is the *deterministic,
 offline scaffold* — it extracts the graph, symbols, issues, concepts, and
@@ -141,7 +141,7 @@ Tell the user:
   answers.
 - **Cheapest impact check (preferred over reading files):** to learn what a file
   depends on and what breaks if you change it, run a query instead of opening
-  files — it answers in ~200 tokens:
+  files — it answers in ~150–400 tokens:
 
   ```bash
   python /path/to/nodo/nodo.py . --query path/to/file.ts
@@ -238,23 +238,33 @@ python /path/to/nodo/nodo.py . --hook
 ```
 
 After that, regenerate the map with the skill whenever the code changes; the
-hook always serves the latest `.nodo/nodo-context.md`.
+hook always serves the latest `.nodo/nodo-context.md`. `--install` also adds a
+`PreToolUse` hook on `Grep|Glob` that emits a ONE-TIME per-session nudge steering
+the agent to the map before its first broad file scan (never blocks, ~60 tokens,
+then silent for the rest of the session).
 
 ## Live tools via MCP (optional)
 
 Nodo can also run as an MCP server so you can call it as **tools mid-session**
 (not just read the context file at the start): `python /path/to/nodo/nodo.py --mcp .`
-(needs `pip install mcp`). It exposes `nodo_ask`, `nodo_blast_radius`,
-`nodo_who_uses`, `nodo_path`, `nodo_explain`, `nodo_list_issues`, `nodo_hubs`,
-`nodo_topics`, `nodo_overview`, `nodo_refresh`, `nodo_fix_context` (the structured
-`<context>` prompt for a file's issues — evidence to act on), `nodo_changed`
-(diff-aware blast radius of recent edits), `nodo_calls` (a function's call graph),
-`nodo_surprises` (cross-module / cross-modal bridge edges — see Advanced mode),
-`nodo_what_if` (impact simulation — transitive importers/callers of a file/fn),
-`nodo_symbols` (symbol-graph summary), `nodo_vibe_summary` (architectural vibe
-check), plus `nodo_self_check` and `nodo_teach` (see Self-healing below). `nodo.py .
---install` registers it in `.mcp.json`. Same rule applies: these are fast offline
-*evidence* — you read the result and tell the user the correct part.
+— **no install needed** (a built-in zero-dependency stdio server is used;
+`pip install mcp` only switches to the official SDK).
+
+**Token-cheap by default:** MCP tool definitions sit in the agent's context every
+turn, so the default surface is **five tools** (~0.4k tokens): `nodo_ask` (routes
+any natural-language question — issues, hubs, topics, overview, paths, concepts),
+`nodo_blast_radius`, `nodo_who_uses`, `nodo_changed` (diff-aware blast radius of
+recent edits), and `nodo_refresh`. Run with `--mcp-tools full` (or
+`NODO_MCP_TOOLS=full`) to also expose `nodo_path`, `nodo_explain`,
+`nodo_list_issues`, `nodo_hubs`, `nodo_topics`, `nodo_overview`, `nodo_fix_context`
+(the structured `<context>` prompt for a file's issues), `nodo_calls` (a function's
+call graph), `nodo_surprises` (cross-module / cross-modal bridge edges — see
+Advanced mode), `nodo_what_if` (impact simulation), `nodo_symbols` (symbol-graph
+summary), `nodo_vibe_summary` (architectural vibe check), plus `nodo_self_check`
+and `nodo_teach` (see Self-healing below). The server *accepts* all 19 in either
+mode — lite only changes what is advertised. `nodo.py . --install` registers it in
+`.mcp.json`. Same rule applies: these are fast offline *evidence* — you read the
+result and tell the user the correct part.
 
 ## Self-healing: teach nodo when it's blind (you are the tutor)
 
