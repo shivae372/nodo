@@ -1050,6 +1050,26 @@ class TestMCPServer(unittest.TestCase):
         fx = serve.dispatch(st, "nodo_fix_context", {"file": "src/main.ts"})
         self.assertIn("<context", fx)        # emits the evidence prompt (main.ts has a console.log)
 
+    def test_tool_specs_lite_is_token_cheap_subset(self):
+        from nodo import serve
+        full = {s["name"] for s in serve.tool_specs()}
+        lite = {s["name"] for s in serve.tool_specs("lite")}
+        self.assertEqual(lite, set(serve.LITE_TOOLS))
+        self.assertTrue(lite < full)                      # strict subset
+        self.assertIn("nodo_ask", lite)                   # the router stays lite
+        # dispatch accepts full-only tools even when the lite surface is advertised
+        st = self._state()
+        self.assertIsInstance(serve.dispatch(st, "nodo_hubs", {}), str)
+        # mode resolution: explicit arg > NODO_MCP_TOOLS env > lite; junk → lite
+        os.environ["NODO_MCP_TOOLS"] = "full"
+        try:
+            self.assertEqual(serve._tools_mode(None), "full")
+            self.assertEqual(serve._tools_mode("lite"), "lite")   # explicit arg wins
+        finally:
+            del os.environ["NODO_MCP_TOOLS"]
+        self.assertEqual(serve._tools_mode(None), "lite")
+        self.assertEqual(serve._tools_mode("bogus"), "lite")
+
     def test_serve_without_mcp_is_graceful(self):
         from nodo import serve
         try:
@@ -1682,6 +1702,92 @@ class TestResolverHints(unittest.TestCase):
         self.assertFalse(any(g["kind"] == "unresolved_local" and g["file"] == "src/main.ts"
                              for g in after["gaps"]),
                          "taught hints must clear the self-check nag (heal loop completes)")
+
+
+class TestVersionConsistency(unittest.TestCase):
+    """Every version reference in the repo must agree. Version drift shipped a
+    plugin whose files self-reported an older version than the manifest claimed
+    (v1.1-era code resolving under a v1.2.2 marketplace entry) — this makes the
+    suite fail loudly instead."""
+
+    def test_all_version_locations_agree(self):
+        import re as _re
+        root = Path(__file__).resolve().parent.parent
+        from nodo import __version__ as code_v
+
+        py = (root / "pyproject.toml").read_text(encoding="utf-8")
+        pyproject_v = _re.search(r'^version = "([^"]+)"', py, _re.M).group(1)
+
+        plugin = json.loads((root / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+        plugin_v = plugin["version"]
+
+        self.assertEqual(code_v, pyproject_v,
+                         "nodo/__init__.py and pyproject.toml disagree")
+        self.assertEqual(code_v, plugin_v,
+                         ".claude-plugin/plugin.json (the marketplace version) lags the code")
+
+        # The README's Action example is user-facing — keep it in lockstep and
+        # push the matching tag at release. (The repo's own workflow pin in
+        # .github/workflows/ is operational, updated by the maintainer at release
+        # time — GitHub Apps can't push workflow files without the `workflows`
+        # permission, so it is a release-checklist item, not a hard assertion.)
+        text = (root / "README.md").read_text(encoding="utf-8")
+        for ref in _re.findall(r"shivae372/nodo@v([\d.]+)", text):
+            self.assertEqual(code_v, ref,
+                             f"README.md pins shivae372/nodo@v{ref} but the code is {code_v} "
+                             f"(bump the ref and push tag v{code_v} at release)")
+
+
+class TestCompiledLanguageImports(unittest.TestCase):
+    """Rust / Go / Java / C# / PHP import extraction + directory-package resolution."""
+
+    def _graph(self, files):
+        d = make_project(files)
+        nodes, edges, texts = scanner.build_graph(d, ignore_dirs={".git"})
+        rel = {n["id"]: n["rel"] for n in nodes}
+        return {(rel[e["source"]], rel[e["target"]])
+                for e in edges if e.get("kind", "import") == "import"}
+
+    def test_rust_use_crate_super_and_mod(self):
+        edges = self._graph({
+            "src/lib.rs": "pub mod db;\npub mod net;\nuse crate::db::query;\n",
+            "src/db.rs": "use crate::net::send;\n",
+            "src/net/mod.rs": "use super::db;\npub fn send() {}\n",
+        })
+        self.assertIn(("src/lib.rs", "src/db.rs"), edges)          # mod db;
+        self.assertIn(("src/lib.rs", "src/net/mod.rs"), edges)     # mod net; → net/mod.rs
+        self.assertIn(("src/db.rs", "src/net/mod.rs"), edges)      # use crate::net::…
+        self.assertIn(("src/net/mod.rs", "src/db.rs"), edges)      # use super::db
+        # std:: never links
+        edges2 = self._graph({"src/a.rs": "use std::collections::HashMap;\n",
+                              "src/collections.rs": "pub struct HashMap2;\n"})
+        self.assertEqual(edges2, set())
+
+    def test_go_block_imports_and_stdlib_filter(self):
+        edges = self._graph({
+            "go.mod": "module github.com/acme/app\n",
+            "main.go": 'import (\n\t"errors"\n\t"fmt"\n\t"github.com/acme/app/render"\n)\n',
+            "errors.go": "package app\n",
+            "render/render.go": "package render\n",
+        })
+        # block import resolves to the package DIRECTORY's representative file
+        self.assertIn(("main.go", "render/render.go"), edges)
+        # stdlib "errors" must NOT forge an edge to the local errors.go
+        self.assertNotIn(("main.go", "errors.go"), edges)
+
+    def test_java_and_csharp_and_php(self):
+        edges = self._graph({
+            "src/com/acme/Billing.java": "import com.acme.util.Money;\n",
+            "src/com/acme/util/Money.java": "package com.acme.util;\n",
+            "App/Services/Pay.php": "use App\\Models\\Invoice;\n",
+            "App/Models/Invoice.php": "<?php class Invoice {}\n",
+            "cs/Program.cs": "using Acme.Core;\nusing var f = null;\n",
+            "cs/Acme/Core/Kernel.cs": "namespace Acme.Core;\n",
+        })
+        self.assertIn(("src/com/acme/Billing.java", "src/com/acme/util/Money.java"), edges)
+        self.assertIn(("App/Services/Pay.php", "App/Models/Invoice.php"), edges)
+        # C#: `using Acme.Core;` resolves via the directory-package fallback
+        self.assertIn(("cs/Program.cs", "cs/Acme/Core/Kernel.cs"), edges)
 
 
 if __name__ == "__main__":

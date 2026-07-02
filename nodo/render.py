@@ -78,18 +78,35 @@ def render(out_dir, project_name, abs_root, nodes, edges, communities,
     n_warn = sum(1 for x in issues if x['severity'] == 'warn')
     n_info = sum(1 for x in issues if x['severity'] == 'info')
 
-    # hubs (top CODE nodes only — docs/assets are not "load-bearing files")
+    # hubs (top CODE nodes only — docs/assets are not "load-bearing files").
+    # God-node hygiene: barrel/wiring files (__init__.py, index.ts, mod.rs) top raw
+    # degree rankings while saying little about architecture — an agent's orientation
+    # budget is better spent on real modules. Skip them while filling the list; if a
+    # project is nearly all barrels (rare), fall back to them, flagged 'mechanical'.
     code_ids = {n['id'] for n in nodes if n.get('kind', 'code') == 'code'}
-    hub_list = []
+
+    def _mechanical(rel):
+        base = rel.rsplit('/', 1)[-1].split('.', 1)[0]
+        return base in ('__init__', 'index', 'mod')
+
+    hub_list, _barrels = [], []
     for nid, d in ranked:
         if d == 0:
             break
         if nid not in code_ids:
             continue
         n = id_to_node[nid]
-        hub_list.append({'label': n['label'], 'file': n['rel'], 'edges': d})
+        row = {'label': n['label'], 'file': n['rel'], 'edges': d}
+        (_barrels if _mechanical(n['rel']) else hub_list).append(row)
         if len(hub_list) >= 15:
             break
+    if len(hub_list) < 5 and _barrels:
+        for row in _barrels:
+            row['mechanical'] = True
+            hub_list.append(row)
+            if len(hub_list) >= 15:
+                break
+        hub_list.sort(key=lambda h: -h['edges'])
 
     comm_display = []
     for c in comm_summaries:
@@ -259,8 +276,25 @@ def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
           f'{sum(1 for i in issues if i.get("confidence") == "medium")} medium · '
           f'{sum(1 for i in issues if i.get("confidence") == "low")} low '
           f'(act on high first; low are hints)\n',
-          '\n## Architectural hubs (highest blast radius)\n',
-          '| File | Edges |', '|---|---|']
+          '\n## Ask nodo instead of reading files\n']
+    # Progressive disclosure (the token-saving contract): this summary orients;
+    # SPECIFIC questions should go to queries (a few hundred tokens) not file reads.
+    # Ground each suggestion in THIS scan so it's copy-pasteable.
+    _top_hub = hub_list[0]['file'] if hub_list else '<file>'
+    _concept = ''
+    _gods = (knowledge or {}).get('god_nodes') or []
+    if _gods:
+        _concept = _gods[0].get('concept', '')
+    md.append('Answers cost a few hundred tokens each — cheaper than opening files:\n')
+    md.append(f'- What breaks if I change a file: `nodo . --query {_top_hub}`')
+    md.append('- Any question, routed for you: `nodo . --ask "<question>"` '
+              '(impact, issues, hubs, concepts, overview)')
+    if _concept:
+        md.append(f'- Where a concept lives (code+docs): `nodo . --explain "{_concept}"`')
+    md.append('- What my recent edits put at risk: ask `what changed` '
+              '(or MCP `nodo_changed`)')
+    md.extend(['\n## Architectural hubs (highest blast radius)\n',
+               '| File | Edges |', '|---|---|'])
     for h in hub_list:
         md.append(f'| `{h["file"]}` | {h["edges"]} |')
 
@@ -330,14 +364,20 @@ def _write_artifacts(out_dir, project_name, build_ts, nodes, edges, communities,
     by_cat = defaultdict(list)
     for iss in issues:
         by_cat[iss['category']].append(iss)
+    # Global row budget: the summary must stay token-cheap even on repos with
+    # thousands of findings — full detail lives in nodo-context.json / -issues.txt
+    # (progressive disclosure: act on high-confidence here, drill in on demand).
+    _budget = 150
     for cat in sorted(by_cat, key=lambda c: -len(by_cat[c])):
         grp = by_cat[cat]
         md.append(f'\n### {cat} ({len(grp)})\n')
-        for iss in grp[:40]:
+        take = grp[:min(40, max(0, _budget))]
+        for iss in take:
             ln = f':L{iss["line"]}' if iss.get('line') else ''
             md.append(f'- **[{iss["severity"].upper()}] {iss["type"]}** _(conf: {iss.get("confidence","medium")})_ — `{iss.get("file","")}{ln}` — {iss["detail"][:140]}')
-        if len(grp) > 40:
-            md.append(f'- _…and {len(grp) - 40} more (see nodo-context.json)_')
+        _budget -= len(take)
+        if len(grp) > len(take):
+            md.append(f'- _…and {len(grp) - len(take)} more (see nodo-context.json)_')
     (out_dir / 'nodo-context.md').write_text('\n'.join(md) + '\n', encoding='utf-8')
 
     # TXT

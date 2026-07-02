@@ -1,6 +1,6 @@
 {
   "name": "nodo",
-  "version": "1.2.2",
+  "version": "1.3.0",
   "description": "Map any codebase: deterministic dependency + symbol + call graph, issue detection, and AI-agent context. The architecture layer of the claude-bootstrap ecosystem — zero dependencies, offline.",
   "author": { "name": "Shiva Kumar Esakki Pandiyan", "url": "https://github.com/shivae372" },
   "homepage": "https://github.com/shivae372/nodo",

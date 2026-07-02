@@ -2,9 +2,14 @@
 Optional MCP (Model Context Protocol) stdio server.
 
 Exposes nodo's query engine as LIVE TOOLS an agent (Claude Code, Cursor, …) can
-call mid-session — `nodo_ask`, `nodo_blast_radius`, `nodo_who_uses`, `nodo_path`,
-`nodo_explain`, `nodo_list_issues`, `nodo_hubs`, `nodo_topics`, `nodo_overview`,
-`nodo_refresh` — instead of only reading the static context files at session start.
+call mid-session, instead of only reading the static context files at session start.
+
+Tool definitions are resident in the agent's context window on EVERY turn, so by
+default the server advertises a lite, token-cheap surface (LITE_TOOLS: `nodo_ask`,
+`nodo_blast_radius`, `nodo_who_uses`, `nodo_changed`, `nodo_refresh`) — `nodo_ask`
+routes natural-language questions to issues/hubs/topics/overview/path/explain, so
+nothing is lost. Run with `--mcp-tools full` (or NODO_MCP_TOOLS=full) to advertise
+all tools individually; dispatch() accepts every tool in either mode.
 
 Zero-dependency by default: if the `mcp` SDK is installed it is used; otherwise nodo
 falls back to a built-in pure-stdlib JSON-RPC stdio server (identical tools), so
@@ -302,11 +307,33 @@ class _State:
         return "Taught nodo (" + "; ".join(bits) + ")." + tail + " Map refreshed — healed."
 
 
-def tool_specs():
-    """MCP tool definitions (name, description, JSON input schema)."""
+# The lite (default) tool surface. Tool definitions are resident in the agent's
+# context on EVERY turn, called or not — 19 tools ≈ 1.3k tokens re-billed per turn.
+# The lite set keeps the high-frequency tools; `nodo_ask` routes natural-language
+# questions to everything else (issues, hubs, topics, overview, path, explain), so
+# no capability is lost — full mode just makes each tool individually addressable.
+# Expose all 19 with `--mcp-tools full` (or NODO_MCP_TOOLS=full).
+LITE_TOOLS = frozenset({
+    "nodo_ask", "nodo_blast_radius", "nodo_who_uses", "nodo_changed", "nodo_refresh",
+})
+
+
+def _tools_mode(tools=None):
+    """Resolve the tool-surface mode: explicit arg > NODO_MCP_TOOLS env > 'lite'."""
+    import os
+    t = (tools or os.environ.get("NODO_MCP_TOOLS") or "lite").strip().lower()
+    return t if t in ("lite", "full") else "lite"
+
+
+def tool_specs(tools="full"):
+    """MCP tool definitions (name, description, JSON input schema).
+
+    tools="full" (default) returns all tools — the stable public surface, and what
+    dispatch() always accepts. tools="lite" returns only LITE_TOOLS, the token-cheap
+    subset the server advertises by default."""
     S = lambda **p: {"type": "object", "properties": p, "required": [k for k in p]}
     opt = lambda **p: {"type": "object", "properties": p, "required": []}
-    return [
+    specs = [
         {"name": "nodo_ask", "description": "Ask a natural-language question about the codebase; "
          "nodo routes it to blast-radius, import-path, symbol, issues, hubs, concept, or overview.",
          "schema": S(question={"type": "string", "description": "the question"})},
@@ -329,37 +356,36 @@ def tool_specs():
         {"name": "nodo_overview", "description": "A synthesized project overview (files, hubs, "
          "concepts, topics, issue counts).", "schema": opt()},
         {"name": "nodo_refresh", "description": "Rescan the project so answers reflect the latest code.", "schema": opt()},
-        {"name": "nodo_self_check", "description": "What nodo does NOT understand yet — unknown "
-         "languages, files it parsed but pulled nothing from, unresolved local imports — with a "
-         "ready-to-fill lesson template. Use this, then nodo_teach, to heal a blind spot.",
+        {"name": "nodo_self_check", "description": "nodo's blind spots — unknown languages, "
+         "empty parses, unresolved local imports — with a ready-to-fill lesson for nodo_teach.",
          "schema": opt()},
-        {"name": "nodo_teach", "description": "Tutor nodo: persist a lesson so it sticks across "
-         "scans. Pass a lesson object — languages (extensions + def/import regex), keep_alive "
-         "(suppress a confirmed false 'dead code' finding), or resolver_hints. nodo applies it "
-         "immediately and on every future scan. Offline; no LLM call.",
+        {"name": "nodo_teach", "description": "Persist a lesson (languages, keep_alive, "
+         "resolver_hints — lessons.json schema); applied now and on every future scan. Offline.",
          "schema": S(lesson={"type": "object", "description": "a lesson per the lessons.json schema"})},
-        {"name": "nodo_fix_context", "description": "Emit the structured <context> prompt for a "
-         "file's issues (evidence to act on — nodo gathers, you write the fix).",
+        {"name": "nodo_fix_context", "description": "Structured <context> prompt for a file's "
+         "issues — evidence for you to act on.",
          "schema": S(file={"type": "string", "description": "path to a source file"})},
-        {"name": "nodo_changed", "description": "Files changed since the last scan and their "
-         "combined transitive blast radius — what your recent edits put at risk.",
+        {"name": "nodo_changed", "description": "Files changed since the last scan + their "
+         "combined transitive blast radius.",
          "schema": opt()},
         {"name": "nodo_calls", "description": "A function's call graph: who calls it and what "
-         "it calls (function-level, deterministic from the parse tree).",
+         "it calls (from the parse tree).",
          "schema": S(symbol={"type": "string", "description": "function/method name"})},
-        {"name": "nodo_surprises", "description": "Surprising connections — ranked cross-module / "
-         "cross-modal (code↔docs↔assets) bridge edges that grep and similarity search miss. "
-         "nodo gives the edge + evidence; you explain why it matters.", "schema": opt()},
-        {"name": "nodo_what_if", "description": "Impact simulation: what a change to a file "
-         "(transitive importers) or function (transitive callers) could affect.",
+        {"name": "nodo_surprises", "description": "Ranked surprising connections — cross-module / "
+         "cross-modal (code↔docs↔assets) bridge edges grep would miss.", "schema": opt()},
+        {"name": "nodo_what_if", "description": "Impact simulation: transitive importers of a "
+         "file, or transitive callers of a function.",
          "schema": S(target={"type": "string", "description": "a file path or function name"})},
-        {"name": "nodo_symbols", "description": "Symbol-graph summary — functions/classes/methods "
-         "as nodes with defines/calls/inherits edges (full graph in .nodo/nodo-symbols.json).",
+        {"name": "nodo_symbols", "description": "Symbol-graph summary — defines/calls/inherits "
+         "(full graph in .nodo/nodo-symbols.json).",
          "schema": opt()},
-        {"name": "nodo_vibe_summary", "description": "A concise architectural 'vibe check' "
-         "(deterministic): shape (god module / modular / layered), coupling, health, themes.",
+        {"name": "nodo_vibe_summary", "description": "Deterministic architectural vibe check: "
+         "shape, coupling, health, themes.",
          "schema": opt()},
     ]
+    if _tools_mode(tools) == "lite":
+        return [s for s in specs if s["name"] in LITE_TOOLS]
+    return specs
 
 
 def dispatch(state, name, args):
@@ -418,22 +444,26 @@ def _version():
         return "0"
 
 
-def serve_stdlib(root='.', out_dir=None):
+def serve_stdlib(root='.', out_dir=None, tools=None):
     """Built-in MCP stdio server — pure Python standard library, ZERO dependencies.
     Speaks JSON-RPC 2.0 over stdin/stdout and exposes the same tools as the SDK path
     (reuses tool_specs() + dispatch()). Used automatically when the `mcp` package is
-    absent, so nodo's MCP works out of the box — matching nodo's zero-dep ethos."""
+    absent, so nodo's MCP works out of the box — matching nodo's zero-dep ethos.
+
+    tools: 'lite' (default — the token-cheap surface) or 'full' (all tools).
+    dispatch() accepts every tool in either mode."""
     import json
     state = _State(root, out_dir)
     protocol = "2024-11-05"
+    mode = _tools_mode(tools)
 
     def send(obj):
         sys.stdout.write(json.dumps(obj) + "\n")
         sys.stdout.flush()
 
-    def tools():
+    def tools_list():
         return [{"name": s["name"], "description": s["description"], "inputSchema": s["schema"]}
-                for s in tool_specs()]
+                for s in tool_specs(mode)]
 
     for line in sys.stdin:
         line = line.strip()
@@ -449,7 +479,7 @@ def serve_stdlib(root='.', out_dir=None):
                 "protocolVersion": protocol, "capabilities": {"tools": {}},
                 "serverInfo": {"name": "nodo", "version": _version()}}})
         elif method == "tools/list":
-            send({"jsonrpc": "2.0", "id": mid, "result": {"tools": tools()}})
+            send({"jsonrpc": "2.0", "id": mid, "result": {"tools": tools_list()}})
         elif method == "tools/call":
             p = msg.get("params", {}) or {}
             text = dispatch(state, p.get("name", ""), p.get("arguments", {}) or {})
@@ -463,9 +493,15 @@ def serve_stdlib(root='.', out_dir=None):
     return 0
 
 
-def serve(root='.', out_dir=None):
+def serve(root='.', out_dir=None, tools=None):
     """Run the MCP stdio server. Uses the `mcp` SDK if installed; otherwise falls back
-    to the built-in pure-stdlib server (serve_stdlib) — so `--mcp` needs no install."""
+    to the built-in pure-stdlib server (serve_stdlib) — so `--mcp` needs no install.
+
+    tools: 'lite' (default) advertises only LITE_TOOLS — tool definitions sit in the
+    agent's context every turn, so the default surface is kept token-cheap; `nodo_ask`
+    still routes to everything. 'full' advertises all tools. Override per-project with
+    NODO_MCP_TOOLS=full or `--mcp-tools full`."""
+    mode = _tools_mode(tools)
     try:
         import asyncio
         from mcp.server import Server
@@ -475,7 +511,7 @@ def serve(root='.', out_dir=None):
         sys.stderr.write(
             "nodo MCP: 'mcp' SDK not found — using the built-in zero-dependency stdio "
             "server (run `pip install mcp` to use the official SDK instead).\n")
-        return serve_stdlib(root, out_dir)
+        return serve_stdlib(root, out_dir, mode)
 
     state = _State(root, out_dir)
     server = Server("nodo")
@@ -483,7 +519,7 @@ def serve(root='.', out_dir=None):
     @server.list_tools()
     async def _list_tools():
         return [types.Tool(name=s["name"], description=s["description"], inputSchema=s["schema"])
-                for s in tool_specs()]
+                for s in tool_specs(mode)]
 
     @server.call_tool()
     async def _call_tool(name, arguments):
@@ -503,8 +539,11 @@ def _cli(argv=None):
                                 description="Run nodo as an MCP server (stdio).")
     p.add_argument("path", nargs="?", default=".", help="project root (default: .)")
     p.add_argument("-o", "--out", default=None, help="output dir (default: <path>/.nodo)")
+    p.add_argument("--tools", choices=("lite", "full"), default=None,
+                   help="tool surface: 'lite' (default; token-cheap — tool definitions "
+                        "cost context every turn) or 'full' (all tools)")
     a = p.parse_args(argv)
-    return serve(a.path, a.out)
+    return serve(a.path, a.out, a.tools)
 
 
 if __name__ == "__main__":

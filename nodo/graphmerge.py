@@ -132,6 +132,50 @@ def integrate(code_nodes, code_edges, communities, docs, assets, root,
         edges.append({'source': s, 'target': t, 'kind': 'reference', 'prov': 'inferred'})
 
     # ── doc → (code | asset) edges, from markdown links + filename mentions ──
+    # Mention matching is INVERTED for scale: the old form regex-searched every doc
+    # for every unique basename/stem — O(docs × names) full-text scans, ~4M regex
+    # runs on a 3k-file/700-doc repo and the dominant scan cost. Now each doc is
+    # tokenized once, tokens are intersected with the name sets, and only that
+    # handful of candidates is confirmed with the ORIGINAL guarded regex — same
+    # semantics (the superset tokenizer + exact confirm can't miss or over-match),
+    # near-linear cost.
+    uniq_base = {n: rels[0] for n, rels in link_by_base.items() if len(rels) == 1}
+    uniq_stem = {s: rels[0] for s, rels in stem_by.items()
+                 if len(rels) == 1 and len(s) >= 4 and s.lower() not in _COMMON_STEMS}
+    _pat_cache = {}
+
+    def _confirm(name, text, kind):
+        pat = _pat_cache.get((kind, name))
+        if pat is None:
+            if kind == 'base':   # original basename guards
+                pat = re.compile(r'(^|[^\w./])' + re.escape(name) + r'($|[^\w])')
+            else:                # original stem guards
+                pat = re.compile(r'(?<![\w.])' + re.escape(name) + r'(?![\w.])')
+            _pat_cache[(kind, name)] = pat
+        return pat.search(text) is not None
+
+    _TOKEN = re.compile(r'[\w.\-]+')
+
+    def _doc_candidates(text):
+        """Superset of every substring the guarded regexes could match: tokens on
+        the guards' boundary characters, plus all dash-delimited spans (both guard
+        sets admit '-' as a boundary), stripped of leading/trailing dots."""
+        cands = set()
+        for tok in set(_TOKEN.findall(text)):
+            parts = tok.split('-')
+            k = len(parts)
+            for i in range(k):
+                acc = parts[i]
+                span = acc.strip('.')
+                if span:
+                    cands.add(span)
+                for j in range(i + 1, k):
+                    acc = acc + '-' + parts[j]
+                    span = acc.strip('.')
+                    if span:
+                        cands.add(span)
+        return cands
+
     for rel, nid in doc_ids.items():
         text = docs[rel] or ''
         targets = set()
@@ -140,16 +184,16 @@ def integrate(code_nodes, code_edges, communities, docs, assets, root,
                 r = _resolve(m, rel, link_by_rel, link_by_base)
                 if r:
                     targets.add(r)
-        # also unique-basename mentions of code files in prose/code-fences
-        for name, rels in link_by_base.items():
-            if len(rels) == 1 and re.search(r'(^|[^\w./])' + re.escape(name) + r'($|[^\w])', text):
-                targets.add(rels[0])
+        cands = _doc_candidates(text)
+        # unique-basename mentions of code files in prose/code-fences
+        for name in cands.intersection(uniq_base):
+            if _confirm(name, text, 'base'):
+                targets.add(uniq_base[name])
         # …and unique, distinctive MODULE-name mentions (no extension), e.g. a
         # spec that says "AudioEngine" links to AudioEngine.js.
-        for stem, rels in stem_by.items():
-            if (len(rels) == 1 and len(stem) >= 4 and stem.lower() not in _COMMON_STEMS
-                    and re.search(r'(?<![\w.])' + re.escape(stem) + r'(?![\w.])', text)):
-                targets.add(rels[0])
+        for name in cands.intersection(uniq_stem):
+            if _confirm(name, text, 'stem'):
+                targets.add(uniq_stem[name])
         for r in sorted(targets)[:max_doc_edges]:   # sorted: deterministic order + cap
             add_edge(nid, rel_to_id.get(r))
 

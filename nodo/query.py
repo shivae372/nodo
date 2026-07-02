@@ -2,7 +2,7 @@
 Token-cheap blast-radius queries against a previously-generated nodo-context.json.
 
 The point: instead of an AI agent reading ten files to figure out "what does this
-touch and what breaks if I change it", it runs one query and gets a ~200-token
+touch and what breaks if I change it", it runs one query and gets a few-hundred-token
 answer. This is where Nodo saves the most tokens — it answers the impact question
 without the agent ever opening a file.
 
