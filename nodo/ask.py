@@ -318,7 +318,10 @@ def answer(question, nodes, edges, file_texts, out_dir, docs=None, _split=True):
                     'single route):\n\n' + '\n\n'.join(blocks))
 
     ctx = _ctx(out_dir)
-    idx = build_symbol_index(nodes, file_texts)
+    # Routing needs only the NAME SET of defined symbols — a defs-only index.
+    # (Resolving references for all symbols here hung --ask for minutes on
+    # multi-thousand-file repos; the symbol route resolves refs per-symbol.)
+    idx = build_symbol_index(nodes, file_texts, only=())
     files, syms = _resolve_files_and_symbols(question, nodes, set(idx))
 
     # 0) "describe the diagram / what's in <image>.pdf" → the asset's vision/converted text
