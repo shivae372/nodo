@@ -243,6 +243,91 @@ GENERIC_IMPORT_RES = [
     re.compile(r'''(?:import|use|include|require|from)\s+['"<]([^'">\s]+)['">]'''),
 ]
 
+# ── Compiled-language families (unquoted import syntax the generic regex,
+#    which requires a quote/'<' after the keyword, could never see) ──────────
+RUST_USE_RE = re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?use\s+([A-Za-z_][\w:]*)', re.M)
+RUST_MOD_RE = re.compile(r'^\s*(?:pub(?:\([^)]*\))?\s+)?mod\s+([A-Za-z_]\w*)\s*;', re.M)
+GO_IMPORT_SINGLE_RE = re.compile(r'^\s*import\s+(?:[\w.]+\s+)?"([^"]+)"', re.M)
+GO_IMPORT_BLOCK_RE = re.compile(r'^\s*import\s*\(([^)]*)\)', re.M | re.S)
+GO_BLOCK_LINE_RE = re.compile(r'"([^"]+)"')
+JAVA_IMPORT_RE = re.compile(r'^\s*import\s+(?:static\s+)?([\w.]+)', re.M)
+CSHARP_USING_RE = re.compile(r'^\s*(?:global\s+)?using\s+(?:static\s+)?([\w.]+)\s*;', re.M)
+PHP_USE_RE = re.compile(r'^\s*use\s+(?:function\s+|const\s+)?([\w\\]+)', re.M)
+
+
+def _rust_imports(text):
+    """`use`/`mod` targets as slashed paths. crate:: → bare (prefix pass finds
+    src/), super::/self:: → ../ and ./ relative to the importer, `mod x;` → ./x
+    (x.rs or x/mod.rs — _match_exact knows the /mod convention)."""
+    out = []
+    for target in RUST_USE_RE.findall(text):
+        segs = [s for s in target.split('::') if s]
+        if not segs:
+            continue
+        head = segs[0]
+        if head in ('std', 'core', 'alloc'):        # stdlib → external
+            continue
+        if head == 'crate':
+            rest = segs[1:]
+            if rest:
+                out.append('/'.join(rest))
+        elif head == 'self':
+            rest = segs[1:]
+            if rest:
+                out.append('./' + '/'.join(rest))
+        elif head == 'super':
+            ups = 1
+            rest = segs[1:]
+            while rest and rest[0] == 'super':
+                ups += 1
+                rest = rest[1:]
+            if rest:
+                out.append('../' * ups + '/'.join(rest))
+        else:                                        # external crate OR local module
+            out.append('/'.join(segs))
+        # the full path may name a symbol, not a module — offer the parent too
+        if head in ('crate', 'self') and len(segs) > 2:
+            out.append('/'.join(segs[1:-1]) if head == 'crate'
+                       else './' + '/'.join(segs[1:-1]))
+    for m in RUST_MOD_RE.findall(text):
+        out.append('./' + m)
+    return out
+
+
+# Go standard-library roots. Local packages in a Go module are imported via the
+# module path (github.com/…) — a stdlib-rooted path can never be a local file, but
+# its name often collides with one (`import "errors"` vs a local errors.go), which
+# would forge edges and crown false hubs. Filter them at extraction.
+GO_STDLIB = frozenset({
+    'archive', 'bufio', 'builtin', 'bytes', 'cmp', 'compress', 'container',
+    'context', 'crypto', 'database', 'debug', 'embed', 'encoding', 'errors',
+    'expvar', 'flag', 'fmt', 'go', 'hash', 'html', 'image', 'index', 'io',
+    'iter', 'log', 'maps', 'math', 'mime', 'net', 'os', 'path', 'plugin',
+    'reflect', 'regexp', 'runtime', 'slices', 'sort', 'strconv', 'strings',
+    'structs', 'sync', 'syscall', 'testing', 'text', 'time', 'unicode',
+    'unique', 'unsafe', 'weak',
+})
+
+
+def _go_imports(text):
+    """Import paths from single-line and block form, stdlib filtered out.
+    Package paths point at DIRECTORIES — resolution's dir fallback maps them
+    to the package's representative file."""
+    raw = list(GO_IMPORT_SINGLE_RE.findall(text))
+    for block in GO_IMPORT_BLOCK_RE.findall(text):
+        raw.extend(GO_BLOCK_LINE_RE.findall(block))
+    return [t for t in raw if t.split('/', 1)[0] not in GO_STDLIB]
+
+
+def _dotted_imports(text, rx, sep='.'):
+    """Dotted (Java/Kotlin/C#) or backslashed (PHP) module paths → slashed."""
+    out = []
+    for target in rx.findall(text):
+        t = target.strip(sep).replace(sep, '/')
+        if t and t != 'var':          # C#: `using var x = …` is a statement, not an import
+            out.append(t)
+    return out
+
 
 def _dedup(seq):
     seen, out = set(), []
@@ -279,6 +364,16 @@ def extract_imports(rel_path, text):
         regexes = JS_IMPORT_RES
     elif ext == '.py':
         regexes = PY_IMPORT_RES
+    elif ext == '.rs':
+        return _dedup(_rust_imports(text) + lesson_hits)
+    elif ext == '.go':
+        return _dedup(_go_imports(text) + lesson_hits)
+    elif ext in ('.java', '.kt', '.kts', '.scala'):
+        return _dedup(_dotted_imports(text, JAVA_IMPORT_RE) + lesson_hits)
+    elif ext == '.cs':
+        return _dedup(_dotted_imports(text, CSHARP_USING_RE) + lesson_hits)
+    elif ext == '.php':
+        return _dedup(_dotted_imports(text, PHP_USE_RE, sep='\\') + lesson_hits)
     else:
         regexes = GENERIC_IMPORT_RES
     out = []
@@ -323,13 +418,61 @@ def _build_resolution_index(rel_paths):
             by_noext.setdefault(noext[:-len('/index')], []).append(rp)
         if noext.endswith('/__init__'):
             by_noext.setdefault(noext[:-len('/__init__')], []).append(rp)
+        if noext.endswith('/mod'):     # Rust: foo/mod.rs ≡ the module `foo`
+            by_noext.setdefault(noext[:-len('/mod')], []).append(rp)
         base = noext.split('/')[-1]
         by_basename.setdefault(base, []).append(rp)
     for d in (by_noext, by_basename):
         for k in list(d.keys()):
             d[k] = sorted(set(d[k]), key=lambda r: (_ext_rank(r), len(r), r))
+    # Tail-segment indexes: the distinct files under every key's last 1 and last 2
+    # path segments. Lets _match_unique_suffix answer each candidate with one dict
+    # hit instead of scanning every key — that scan made import resolution
+    # O(files × imports) (quadratic-ish), the dominant cost on repos with
+    # thousands of files (external imports paid it in full on every candidate).
+    by_tail1, by_tail2 = {}, {}
+    for k, files in by_noext.items():
+        segs = k.split('/')
+        by_tail1.setdefault(segs[-1], set()).update(files)
+        if len(segs) >= 2:
+            by_tail2.setdefault('/'.join(segs[-2:]), set()).update(files)
+    tails = {1: {t: tuple(sorted(f, key=lambda r: (_ext_rank(r), len(r), r)))
+                 for t, f in by_tail1.items()},
+             2: {t: tuple(sorted(f, key=lambda r: (_ext_rank(r), len(r), r)))
+                 for t, f in by_tail2.items()}}
+    # Directory-package index: Go / Java / PHP imports name a PACKAGE DIRECTORY,
+    # not a file. Map each dir to a deterministic representative file (prefer
+    # <dir>/<dirname>.*, then mod/index/__init__/main/lib, then ext priority),
+    # with tail-segment indexes over dir paths. Consulted only after every
+    # file-based resolution step fails — strictly additive.
+    children = {}
+    for rp in rel_paths:
+        if '/' in rp:
+            d = rp.rsplit('/', 1)[0]
+            children.setdefault(d, []).append(rp)
+
+    def _rep_rank(d):
+        dirname = d.split('/')[-1]
+
+        def rank(rp):
+            stem = re.sub(r'\.[^./]+$', '', rp.rsplit('/', 1)[-1])
+            return (0 if stem == dirname else
+                    1 if stem in ('mod', 'index', '__init__', 'main', 'lib') else 2,
+                    _ext_rank(rp), len(rp), rp)
+        return rank
+
+    dir_rep = {d: min(kids, key=_rep_rank(d)) for d, kids in children.items()}
+    dtail1, dtail2 = {}, {}
+    for d in dir_rep:
+        segs = d.split('/')
+        dtail1.setdefault(segs[-1], set()).add(d)
+        if len(segs) >= 2:
+            dtail2.setdefault('/'.join(segs[-2:]), set()).add(d)
+    dirtails = {1: {t: sorted(v) for t, v in dtail1.items()},
+                2: {t: sorted(v) for t, v in dtail2.items()}}
     return {'noext': by_noext, 'basename': by_basename,
-            'noext_keys': list(by_noext.keys()), 'rels': set(rel_paths)}
+            'noext_keys': list(by_noext.keys()), 'rels': set(rel_paths),
+            'tails': tails, 'dirs': dir_rep, 'dirtails': dirtails}
 
 
 def _pick(bucket):
@@ -353,11 +496,14 @@ def _match_unique_suffix(cand, idx):
     aliased/base roots (e.g. '../../lib/audio' for 'src/app/lib/audio') without
     inventing phantom edges — a match is accepted only when it is unique.
 
-    Tries the last two path segments first (specific), then the last one."""
+    Tries the last two path segments first (specific), then the last one.
+    O(1) per candidate: reads the precomputed tail-segment indexes instead of
+    scanning every key (which was quadratic-ish in project size)."""
     cand = cand.strip('/')
     if not cand:
         return None
     segs = cand.split('/')
+    tails = idx['tails']
     for n in (2, 1):
         if len(segs) < n:
             continue
@@ -365,13 +511,8 @@ def _match_unique_suffix(cand, idx):
         # a bare, short basename is too ambiguous to match on alone
         if n == 1 and len(tail) < 4:
             continue
-        suffix = '/' + tail
-        files = set()
-        for k in idx['noext_keys']:
-            if k == tail or k.endswith(suffix):
-                files.update(idx['noext'][k])
-        files = sorted(files, key=lambda r: (_ext_rank(r), len(r), r))
-        if len(files) == 1:
+        files = tails[n].get(tail)
+        if files and len(files) == 1:
             return files[0]
     return None
 
@@ -411,6 +552,8 @@ def resolve_import(importer_rel, target, idx, want_why=False):
             for prefix in ('src/', 'app/', 'lib/', 'packages/', 'source/'):
                 cands.append(prefix + c)
 
+    cands = list(dict.fromkeys(cands))   # dedupe, order-preserving (first match wins)
+
     # 1) exact path match (highest confidence) → EXTRACTED
     for c in cands:
         hit = _match_exact(c, idx)
@@ -426,6 +569,29 @@ def resolve_import(importer_rel, target, idx, want_why=False):
     bucket = idx['basename'].get(base)
     if bucket and len(bucket) == 1:
         return _r(bucket[0], 'ambiguous')
+    # 4) directory-package fallback: Go / Java / PHP import a package DIRECTORY
+    #    (e.g. "github.com/gin-gonic/gin/render" → render/). Exact dir path, then
+    #    unique dir tail. Only reached when no file resolved — strictly additive.
+    dirs = idx.get('dirs')
+    if dirs:
+        for c in cands:
+            hit = dirs.get(c.strip('/'))
+            if hit and hit != importer_rel:
+                return _r(hit, 'extracted')
+        dirtails = idx.get('dirtails') or {}
+        for c in cands:
+            segs = c.strip('/').split('/')
+            for n in (2, 1):
+                if len(segs) < n:
+                    continue
+                tail = '/'.join(segs[-n:])
+                if n == 1 and len(tail) < 4:
+                    continue
+                ds = dirtails.get(n, {}).get(tail)
+                if ds and len(ds) == 1:
+                    hit = dirs[ds[0]]
+                    if hit != importer_rel:
+                        return _r(hit, 'ambiguous')
     return _r(None, None)
 
 
